@@ -1,0 +1,220 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated athlete profile, unit preferences, XP, streaks, and unlocked achievements.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "weightUnit": {
+          "type": "string",
+          "enum": ["kg", "lbs"]
+        },
+        "goal": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "xp": {
+          "type": "number"
+        },
+        "streakDays": {
+          "type": "number"
+        },
+        "unlockedAchievements": {
+          "type": "array",
+          "description": "Bounded list of up to 30 unlocked achievement IDs"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "displayName", "email", "weightUnit", "goal", "xp", "streakDays", "unlockedAchievements", "createdAt", "updatedAt"]
+    },
+    "DayPlan": {
+      "title": "DayPlan",
+      "description": "A single weekday's workout plan in the Monday-Sunday planner.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "day": {
+          "type": "string",
+          "enum": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+        },
+        "category": {
+          "type": "string",
+          "enum": ["Push", "Pull", "Legs", "Upper", "Lower", "Full Body", "Cardio", "Core", "Rest Day"]
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "exercises": {
+          "type": "array",
+          "description": "Up to 25 planned exercises for this weekday"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "day", "category", "title", "exercises", "updatedAt"]
+    },
+    "WorkoutLog": {
+      "title": "WorkoutLog",
+      "description": "A completed workout session with logged sets, reps, weights, volume, duration, and PRs.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "date": {
+          "type": "string",
+          "maxLength": 10,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "day": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "category": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "durationSeconds": {
+          "type": "number"
+        },
+        "totalVolumeKg": {
+          "type": "number"
+        },
+        "xpEarned": {
+          "type": "number"
+        },
+        "musclesTrained": {
+          "type": "array",
+          "description": "Up to 15 muscle group names trained in this session"
+        },
+        "entries": {
+          "type": "array",
+          "description": "Up to 30 logged exercises and their sets"
+        },
+        "prsHit": {
+          "type": "array",
+          "description": "Up to 20 personal record descriptions hit in this session"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "date", "day", "category", "title", "durationSeconds", "totalVolumeKg", "xpEarned", "musclesTrained", "entries", "prsHit", "createdAt"]
+    },
+    "CustomExercise": {
+      "title": "CustomExercise",
+      "description": "User-created custom exercise with notes, coaching cues, and optional media URL.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 100
+        },
+        "muscleGroup": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "secondaryMuscles": {
+          "type": "array",
+          "description": "Up to 8 secondary muscle names"
+        },
+        "equipment": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "difficulty": {
+          "type": "string",
+          "enum": ["Beginner", "Intermediate", "Advanced"]
+        },
+        "exerciseType": {
+          "type": "string",
+          "enum": ["Strength", "Hypertrophy", "Cardio", "Mobility", "Power"]
+        },
+        "instructions": {
+          "type": "array",
+          "description": "Up to 12 instruction steps"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "coachingCues": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "mediaType": {
+          "type": "string",
+          "enum": ["image", "video", "none"]
+        },
+        "mediaUrl": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "name", "muscleGroup", "secondaryMuscles", "equipment", "difficulty", "exerciseType", "instructions", "notes", "coachingCues", "mediaType", "mediaUrl", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Owner-isolated athlete profile and gamification state."
+    },
+    "/users/{userId}/plans/{dayId}": {
+      "schema": { "$ref": "#/entities/DayPlan" },
+      "description": "Owner-isolated Monday-Sunday weekly workout plan documents."
+    },
+    "/users/{userId}/logs/{logId}": {
+      "schema": { "$ref": "#/entities/WorkoutLog" },
+      "description": "Owner-isolated completed workout history logs."
+    },
+    "/users/{userId}/customExercises/{exerciseId}": {
+      "schema": { "$ref": "#/entities/CustomExercise" },
+      "description": "Owner-isolated user-created custom exercises."
+    }
+  }
+}

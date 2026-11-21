@@ -1,0 +1,213 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedOwner(userId) {
+      return isSignedIn()
+        && request.auth.uid == userId
+        && request.auth.token.email_verified == true;
+    }
+
+    function isWeekday(day) {
+      return day in ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+    }
+
+    function isValidPlanCategory(cat) {
+      return cat in ['Push', 'Pull', 'Legs', 'Upper', 'Lower', 'Full Body', 'Cardio', 'Core', 'Rest Day'];
+    }
+
+    function isValidDifficulty(diff) {
+      return diff in ['Beginner', 'Intermediate', 'Advanced'];
+    }
+
+    function isValidExerciseType(t) {
+      return t in ['Strength', 'Hypertrophy', 'Cardio', 'Mobility', 'Power'];
+    }
+
+    function isValidMediaType(m) {
+      return m in ['image', 'video', 'none'];
+    }
+
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll([
+          'uid', 'displayName', 'email', 'weightUnit', 'goal',
+          'xp', 'streakDays', 'unlockedAchievements', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'displayName', 'email', 'weightUnit', 'goal',
+          'xp', 'streakDays', 'unlockedAchievements', 'createdAt', 'updatedAt'
+        ])
+        && data.uid is string && data.uid == userId && isValidId(data.uid)
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80
+        && data.email is string && data.email.size() <= 160
+        && data.weightUnit is string && data.weightUnit in ['kg', 'lbs']
+        && data.goal is string && data.goal.size() <= 120
+        && data.xp is number && data.xp >= 0 && data.xp <= 10000000
+        && data.streakDays is number && data.streakDays >= 0 && data.streakDays <= 3650
+        && data.unlockedAchievements is list && data.unlockedAchievements.size() <= 30
+        && (data.unlockedAchievements.size() == 0 || (data.unlockedAchievements[0] is string && data.unlockedAchievements[0].size() <= 64))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidDayPlan(data, userId, dayId) {
+      return data.keys().hasAll(['userId', 'day', 'category', 'title', 'exercises', 'updatedAt'])
+        && data.keys().hasOnly(['userId', 'day', 'category', 'title', 'exercises', 'updatedAt'])
+        && data.userId is string && data.userId == userId && isValidId(data.userId)
+        && data.day is string && data.day == dayId && isWeekday(data.day)
+        && data.category is string && isValidPlanCategory(data.category)
+        && data.title is string && data.title.size() <= 100
+        && data.exercises is list && data.exercises.size() <= 25
+        && (data.exercises.size() == 0 || data.exercises[0] is map)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidWorkoutLog(data, userId) {
+      return data.keys().hasAll([
+          'userId', 'date', 'day', 'category', 'title',
+          'durationSeconds', 'totalVolumeKg', 'xpEarned',
+          'musclesTrained', 'entries', 'prsHit', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'userId', 'date', 'day', 'category', 'title',
+          'durationSeconds', 'totalVolumeKg', 'xpEarned',
+          'musclesTrained', 'entries', 'prsHit', 'createdAt'
+        ])
+        && data.userId is string && data.userId == userId && isValidId(data.userId)
+        && data.date is string && data.date.size() == 10 && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$')
+        && data.day is string && data.day.size() <= 20
+        && data.category is string && data.category.size() <= 40
+        && data.title is string && data.title.size() <= 120
+        && data.durationSeconds is number && data.durationSeconds >= 0 && data.durationSeconds <= 43200
+        && data.totalVolumeKg is number && data.totalVolumeKg >= 0 && data.totalVolumeKg <= 500000
+        && data.xpEarned is number && data.xpEarned >= 0 && data.xpEarned <= 5000
+        && data.musclesTrained is list && data.musclesTrained.size() <= 15
+        && (data.musclesTrained.size() == 0 || (data.musclesTrained[0] is string && data.musclesTrained[0].size() <= 40))
+        && data.entries is list && data.entries.size() <= 30
+        && (data.entries.size() == 0 || data.entries[0] is map)
+        && data.prsHit is list && data.prsHit.size() <= 20
+        && (data.prsHit.size() == 0 || (data.prsHit[0] is string && data.prsHit[0].size() <= 120))
+        && data.createdAt is timestamp;
+    }
+
+    function isValidCustomExercise(data, userId) {
+      return data.keys().hasAll([
+          'userId', 'name', 'muscleGroup', 'secondaryMuscles',
+          'equipment', 'difficulty', 'exerciseType', 'instructions',
+          'notes', 'coachingCues', 'mediaType', 'mediaUrl', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'userId', 'name', 'muscleGroup', 'secondaryMuscles',
+          'equipment', 'difficulty', 'exerciseType', 'instructions',
+          'notes', 'coachingCues', 'mediaType', 'mediaUrl', 'createdAt'
+        ])
+        && data.userId is string && data.userId == userId && isValidId(data.userId)
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 100
+        && data.muscleGroup is string && data.muscleGroup.size() >= 1 && data.muscleGroup.size() <= 40
+        && data.secondaryMuscles is list && data.secondaryMuscles.size() <= 8
+        && (data.secondaryMuscles.size() == 0 || (data.secondaryMuscles[0] is string && data.secondaryMuscles[0].size() <= 40))
+        && data.equipment is string && data.equipment.size() >= 1 && data.equipment.size() <= 40
+        && data.difficulty is string && isValidDifficulty(data.difficulty)
+        && data.exerciseType is string && isValidExerciseType(data.exerciseType)
+        && data.instructions is list && data.instructions.size() <= 12
+        && (data.instructions.size() == 0 || (data.instructions[0] is string && data.instructions[0].size() <= 300))
+        && data.notes is string && data.notes.size() <= 1000
+        && data.coachingCues is string && data.coachingCues.size() <= 500
+        && data.mediaType is string && isValidMediaType(data.mediaType)
+        && data.mediaUrl is string && data.mediaUrl.size() <= 2000
+        && data.createdAt is timestamp;
+    }
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isVerifiedOwner(userId);
+      allow list: if false;
+      allow create: if isValidId(userId)
+        && isVerifiedOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(userId)
+        && isVerifiedOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'displayName', 'weightUnit', 'goal', 'xp', 'streakDays', 'unlockedAchievements', 'updatedAt'
+        ]);
+      allow delete: if false;
+
+      match /plans/{dayId} {
+        allow get: if isValidId(userId) && isWeekday(dayId) && isVerifiedOwner(userId);
+        allow list: if isVerifiedOwner(userId) && resource.data.userId == request.auth.uid;
+        allow create: if isValidId(userId)
+          && isWeekday(dayId)
+          && isVerifiedOwner(userId)
+          && isValidDayPlan(incoming(), userId, dayId)
+          && incoming().updatedAt == request.time;
+        allow update: if isValidId(userId)
+          && isWeekday(dayId)
+          && isVerifiedOwner(userId)
+          && isValidDayPlan(incoming(), userId, dayId)
+          && incoming().userId == existing().userId
+          && incoming().day == existing().day
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['category', 'title', 'exercises', 'updatedAt']);
+        allow delete: if isValidId(userId) && isWeekday(dayId) && isVerifiedOwner(userId);
+      }
+
+      match /logs/{logId} {
+        allow get: if isValidId(userId) && isValidId(logId) && isVerifiedOwner(userId);
+        allow list: if isVerifiedOwner(userId) && resource.data.userId == request.auth.uid;
+        allow create: if isValidId(userId)
+          && isValidId(logId)
+          && isVerifiedOwner(userId)
+          && isValidWorkoutLog(incoming(), userId)
+          && incoming().createdAt == request.time;
+        allow update: if false;
+        allow delete: if isValidId(userId) && isValidId(logId) && isVerifiedOwner(userId);
+      }
+
+      match /customExercises/{exerciseId} {
+        allow get: if isValidId(userId) && isValidId(exerciseId) && isVerifiedOwner(userId);
+        allow list: if isVerifiedOwner(userId) && resource.data.userId == request.auth.uid;
+        allow create: if isValidId(userId)
+          && isValidId(exerciseId)
+          && isVerifiedOwner(userId)
+          && isValidCustomExercise(incoming(), userId)
+          && incoming().createdAt == request.time;
+        allow update: if isValidId(userId)
+          && isValidId(exerciseId)
+          && isVerifiedOwner(userId)
+          && isValidCustomExercise(incoming(), userId)
+          && incoming().userId == existing().userId
+          && incoming().createdAt == existing().createdAt
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'muscleGroup', 'secondaryMuscles', 'equipment', 'difficulty',
+            'exerciseType', 'instructions', 'notes', 'coachingCues', 'mediaType', 'mediaUrl'
+          ]);
+        allow delete: if isValidId(userId) && isValidId(exerciseId) && isVerifiedOwner(userId);
+      }
+    }
+  }
+}
