@@ -8,6 +8,7 @@ import {
   User,
 } from 'lucide-react';
 import { AnalyticsView } from './components/AnalyticsView';
+import { AuthGate } from './components/AuthGate';
 import { CoachView } from './components/CoachView';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { LibraryView } from './components/LibraryView';
@@ -28,9 +29,21 @@ const NAV_ITEMS: { id: NavTab; label: string; icon: React.ComponentType<{ classN
 ];
 
 const VaultShell: React.FC = () => {
-  const { user, profile, setActiveTrackerDay } = useVault();
+  const { user, authReady, profile, setActiveTrackerDay } = useVault();
   const [activeTab, setActiveTab] = useState<NavTab>('planner');
   const [showProfile, setShowProfile] = useState(false);
+
+  if (!authReady) {
+    return (
+      <div className="min-h-screen bg-[#09090B] text-zinc-300 flex items-center justify-center p-6">
+        <div className="text-sm font-mono text-zinc-400">Loading Workout Vault...</div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <AuthGate />;
+  }
 
   const handleStartWorkoutFromPlanner = (day: Weekday) => {
     setActiveTrackerDay(day);
@@ -90,12 +103,17 @@ const VaultShell: React.FC = () => {
       {/* Main Content Viewport */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 pb-24 md:pb-10">
         {activeTab === 'planner' && (
-          <PlannerView onStartWorkout={handleStartWorkoutFromPlanner} />
+          <PlannerView
+            onStartWorkout={handleStartWorkoutFromPlanner}
+            onOpenCoach={() => setActiveTab('coach')}
+          />
         )}
         {activeTab === 'library' && <LibraryView />}
         {activeTab === 'tracker' && <TrackerView />}
         {activeTab === 'analytics' && <AnalyticsView />}
-        {activeTab === 'coach' && <CoachView />}
+        {activeTab === 'coach' && (
+          <CoachView onOpenPlanner={() => setActiveTab('planner')} />
+        )}
       </main>
 
       {/* Mobile Bottom Tab Bar (Thumb Zone, <= 15% viewport height) */}

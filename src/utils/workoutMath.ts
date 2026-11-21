@@ -455,7 +455,7 @@ export function computeCalendarMonth(
 
   const consistencyScore =
     scheduledUpToToday === 0
-      ? 100
+      ? 0
       : Math.min(100, Math.round((completedCount / scheduledUpToToday) * 100));
 
   return {
@@ -483,7 +483,7 @@ export function computeDashboardStats(
   }
 
   const sortedMuscles = Object.entries(muscleCounts).sort((a, b) => b[1] - a[1]);
-  const mostTrainedMuscle = sortedMuscles[0]?.[0] || 'Chest';
+  const mostTrainedMuscle = sortedMuscles[0]?.[0] || 'None yet';
 
   const plannedTrainingDays = WEEKDAYS.filter(
     (d) => plans[d] && plans[d].category !== 'Rest Day' && plans[d].exercises.length > 0
@@ -494,8 +494,8 @@ export function computeDashboardStats(
   const cutoff = sevenDaysAgo.toISOString().slice(0, 10);
   const recent7DaysCount = logs.filter((l) => l.date >= cutoff).length;
   const weeklyConsistency =
-    plannedTrainingDays === 0
-      ? 100
+    logs.length === 0 || plannedTrainingDays === 0
+      ? 0
       : Math.min(100, Math.round((recent7DaysCount / plannedTrainingDays) * 100));
 
   return {

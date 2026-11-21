@@ -11,6 +11,12 @@ import {
   detectNewPRs,
 } from './workoutMath';
 import { DEFAULT_WEEKLY_PLANS } from '../data/exercises';
+import { generateWeeklySplit } from './generator';
+import {
+  calculateBarbellPlates,
+  computeTrainingZones,
+  generateWarmupRamp,
+} from './plateCalc';
 import { WorkoutLog } from '../types/workout';
 
 const sampleLogs: WorkoutLog[] = [
@@ -122,8 +128,9 @@ test('computeGamification unlocks First Workout and 1000kg Lifted on sample logs
 });
 
 test('computeCalendarMonth computes completed, missed, and consistency score', () => {
+  const ppl = generateWeeklySplit('Push Pull Legs');
   const cal = computeCalendarMonth(
-    DEFAULT_WEEKLY_PLANS,
+    ppl,
     sampleLogs,
     2026,
     10, // November 2026
@@ -133,3 +140,41 @@ test('computeCalendarMonth computes completed, missed, and consistency score', (
   assert.equal(nov18?.status, 'completed');
   assert.ok(cal.consistencyScore >= 0 && cal.consistencyScore <= 100);
 });
+
+test('empty workout logs produce zero workouts, zero XP, zero consistency, and None yet muscle', async () => {
+  const { computeDashboardStats } = await import('./workoutMath');
+  const stats = computeDashboardStats([], DEFAULT_WEEKLY_PLANS);
+  const gamification = computeGamification([]);
+  assert.equal(stats.totalWorkouts, 0);
+  assert.equal(stats.totalVolumeKg, 0);
+  assert.equal(stats.streak, 0);
+  assert.equal(stats.weeklyConsistency, 0);
+  assert.equal(stats.mostTrainedMuscle, 'None yet');
+  assert.equal(gamification.xp, 0);
+  assert.equal(gamification.achievements.some((a) => a.unlocked), false);
+});
+
+test('DEFAULT_WEEKLY_PLANS starts empty across all 7 days', () => {
+  for (const dayPlan of Object.values(DEFAULT_WEEKLY_PLANS)) {
+    assert.equal(dayPlan.exercises.length, 0);
+  }
+});
+
+test('calculateBarbellPlates, generateWarmupRamp, and computeTrainingZones compute accurately', () => {
+  const plates = calculateBarbellPlates(100, 'kg');
+  assert.equal(plates.achievableWeight, 100);
+  assert.equal(plates.platesPerSide[0].plate, 25);
+  assert.equal(plates.platesPerSide[0].countPerSide, 1);
+  assert.equal(plates.platesPerSide[1].plate, 15);
+  assert.equal(plates.platesPerSide[1].countPerSide, 1);
+
+  const ramp = generateWarmupRamp(100, 'kg');
+  assert.equal(ramp.length, 4);
+  assert.equal(ramp[0].weight, 20);
+  assert.equal(ramp[3].weight, 87.5);
+
+  const zones = computeTrainingZones(120, 'kg');
+  assert.equal(zones.length, 4);
+});
+
+

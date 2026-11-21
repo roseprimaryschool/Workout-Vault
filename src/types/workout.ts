@@ -114,6 +114,7 @@ export interface LoggedSet {
   weight: number;
   reps: number;
   completed: boolean;
+  rpe?: number;
 }
 
 export interface LoggedExercise {
@@ -220,4 +221,27 @@ export interface CoachAnalysis {
     volumeAdjustment?: string;
   }[];
   readinessVerdict: string;
+}
+
+export interface AiGeneratedProgramExercise {
+  exerciseId: string;
+  sets: number;
+  reps: number;
+  weight: number;
+  restSeconds: number;
+  tempo: string;
+  notes: string;
+}
+
+export interface AiGeneratedProgramDay {
+  day: Weekday;
+  category: PlanCategory;
+  title: string;
+  exercises: AiGeneratedProgramExercise[];
+}
+
+export interface AiGeneratedProgram {
+  programTitle: string;
+  rationale: string;
+  days: AiGeneratedProgramDay[];
 }

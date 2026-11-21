@@ -525,29 +525,35 @@ export const AnalyticsView: React.FC = () => {
             </div>
 
             <div className="space-y-2.5 max-h-[420px] overflow-y-auto pr-1">
-              {Object.values(personalRecords).map((pr) => (
-                <div
-                  key={pr.exerciseId}
-                  className="p-3 rounded-xl bg-zinc-950/75 border border-white/10 flex items-center justify-between gap-3"
-                >
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium text-white truncate">
-                      {pr.exerciseName}
+              {Object.values(personalRecords).length === 0 ? (
+                <p className="text-sm text-zinc-400 py-8 text-center">
+                  No personal records yet. Log your first workout in the Tracker to record benchmarks.
+                </p>
+              ) : (
+                Object.values(personalRecords).map((pr) => (
+                  <div
+                    key={pr.exerciseId}
+                    className="p-3 rounded-xl bg-zinc-950/75 border border-white/10 flex items-center justify-between gap-3"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-white truncate">
+                        {pr.exerciseName}
+                      </div>
+                      <div className="text-[11px] font-mono text-zinc-400 mt-0.5">
+                        Max Reps: {pr.maxReps} · Max Vol: {pr.maxVolume} {profile.weightUnit}
+                      </div>
                     </div>
-                    <div className="text-[11px] font-mono text-zinc-400 mt-0.5">
-                      Max Reps: {pr.maxReps} · Max Vol: {pr.maxVolume} {profile.weightUnit}
+                    <div className="text-right shrink-0">
+                      <div className="text-sm font-bold font-mono text-[#00FF88]">
+                        {pr.maxWeight} {profile.weightUnit}
+                      </div>
+                      <div className="text-[11px] font-mono text-zinc-500">
+                        E1RM {pr.bestE1RM}
+                      </div>
                     </div>
                   </div>
-                  <div className="text-right shrink-0">
-                    <div className="text-sm font-bold font-mono text-[#00FF88]">
-                      {pr.maxWeight} {profile.weightUnit}
-                    </div>
-                    <div className="text-[11px] font-mono text-zinc-500">
-                      E1RM {pr.bestE1RM}
-                    </div>
-                  </div>
-                </div>
-              ))}
+                ))
+              )}
             </div>
           </div>
         </div>

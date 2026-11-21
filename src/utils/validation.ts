@@ -94,6 +94,30 @@ export function sanitizeWorkoutLogForFirestore(log: WorkoutLog, userId: string) 
     ? log.date
     : new Date().toISOString().slice(0, 10);
 
+  const sanitizedEntries = log.entries.slice(0, BLUEPRINT_LIMITS.LOG_ENTRIES_MAX).map((entry) => ({
+    exerciseId: clampString(entry.exerciseId, 80),
+    name: clampString(entry.name, 100),
+    targetMuscle: entry.targetMuscle,
+    sets: entry.sets.slice(0, 25).map((s, idx) => {
+      const baseSet: {
+        setNumber: number;
+        weight: number;
+        reps: number;
+        completed: boolean;
+        rpe?: number;
+      } = {
+        setNumber: Math.max(1, Math.round(s.setNumber || idx + 1)),
+        weight: Math.max(0, Math.min(1000, Math.round((s.weight || 0) * 10) / 10)),
+        reps: Math.max(0, Math.min(200, Math.round(s.reps || 0))),
+        completed: Boolean(s.completed),
+      };
+      if (typeof s.rpe === 'number' && Number.isFinite(s.rpe) && s.rpe >= 6 && s.rpe <= 10) {
+        baseSet.rpe = Math.round(s.rpe * 10) / 10;
+      }
+      return baseSet;
+    }),
+  }));
+
   return {
     userId: clampString(userId, BLUEPRINT_LIMITS.UID_MAX),
     date: validDate,
@@ -104,7 +128,7 @@ export function sanitizeWorkoutLogForFirestore(log: WorkoutLog, userId: string) 
     totalVolumeKg: Math.max(0, Math.min(500000, Math.round(log.totalVolumeKg))),
     xpEarned: Math.max(0, Math.min(5000, Math.round(log.xpEarned))),
     musclesTrained: log.musclesTrained.slice(0, BLUEPRINT_LIMITS.LOG_MUSCLES_MAX),
-    entries: log.entries.slice(0, BLUEPRINT_LIMITS.LOG_ENTRIES_MAX),
+    entries: sanitizedEntries,
     prsHit: log.prsHit.slice(0, BLUEPRINT_LIMITS.LOG_PRS_MAX).map((p) => clampString(p, 120)),
   };
 }

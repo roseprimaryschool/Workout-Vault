@@ -192,7 +192,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({ onClose }) => {
                 className="inline-flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                Reset Seed Split
+                Reset Weekly Template
               </button>
 
               <div className="flex items-center gap-3">

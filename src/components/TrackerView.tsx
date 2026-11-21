@@ -1,14 +1,18 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Award,
+  Calculator,
   Check,
   Clock,
+  Copy,
   Play,
   Plus,
   SkipForward,
   Timer,
   TrendingUp,
   Trophy,
+  Volume2,
+  VolumeX,
   X,
 } from 'lucide-react';
 import { useVault } from '../context/VaultContext';
@@ -25,11 +29,38 @@ import {
   computeProgressiveOverload,
   detectNewPRs,
 } from '../utils/workoutMath';
+import { PlateCalculatorModal } from './PlateCalculatorModal';
 
 function formatTimer(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function playRestCompleteChime() {
+  try {
+    const AudioCtx =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const now = ctx.currentTime;
+
+    [660, 880].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now + idx * 0.14);
+      gain.gain.setValueAtTime(0.08, now + idx * 0.14);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.14 + 0.18);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now + idx * 0.14);
+      osc.stop(now + idx * 0.14 + 0.2);
+    });
+  } catch {
+    // Ignore autoplay/Web Audio blocks gracefully
+  }
 }
 
 export const TrackerView: React.FC = () => {
@@ -53,8 +84,18 @@ export const TrackerView: React.FC = () => {
   const [sessionActive, setSessionActive] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [restRemaining, setRestRemaining] = useState(0);
+  const [chimeEnabled, setChimeEnabled] = useState(true);
   const [showAddPicker, setShowAddPicker] = useState(false);
   const [completedSummary, setCompletedSummary] = useState<WorkoutLog | null>(null);
+  const [copiedRecap, setCopiedRecap] = useState(false);
+  const [plateCalcTarget, setPlateCalcTarget] = useState<{
+    exIdx: number;
+    name: string;
+    weight: number;
+    reps: number;
+  } | null>(null);
+
+  const prevRestRef = useRef(0);
 
   // Sync if launched from Planner "Start" button
   useEffect(() => {
@@ -83,6 +124,7 @@ export const TrackerView: React.FC = () => {
     setRestRemaining(0);
     setSessionActive(true);
     setCompletedSummary(null);
+    setCopiedRecap(false);
   };
 
   // Initialize default day entries on first load if idle
@@ -116,6 +158,14 @@ export const TrackerView: React.FC = () => {
     }, 1000);
     return () => window.clearInterval(timer);
   }, [sessionActive]);
+
+  // Trigger audio chime when rest hits 0 naturally
+  useEffect(() => {
+    if (prevRestRef.current > 0 && restRemaining === 0 && chimeEnabled && sessionActive) {
+      playRestCompleteChime();
+    }
+    prevRestRef.current = restRemaining;
+  }, [restRemaining, chimeEnabled, sessionActive]);
 
   const toggleSetCompleted = (exIdx: number, setIdx: number) => {
     if (!sessionActive) setSessionActive(true);
@@ -155,6 +205,27 @@ export const TrackerView: React.FC = () => {
               sets: ex.sets.map((s, j) =>
                 j !== setIdx ? s : { ...s, [field]: Math.max(0, value) }
               ),
+            }
+      )
+    );
+  };
+
+  const updateSetRpe = (exIdx: number, setIdx: number, rpeVal: string) => {
+    const parsed = rpeVal ? Number(rpeVal) : undefined;
+    setEntries((prev) =>
+      prev.map((ex, i) =>
+        i !== exIdx
+          ? ex
+          : {
+              ...ex,
+              sets: ex.sets.map((s, j) => {
+                if (j !== setIdx) return s;
+                if (parsed === undefined || Number.isNaN(parsed)) {
+                  const { rpe: _omit, ...rest } = s;
+                  return rest;
+                }
+                return { ...s, rpe: parsed };
+              }),
             }
       )
     );
@@ -229,6 +300,28 @@ export const TrackerView: React.FC = () => {
     setCompletedSummary(log);
   };
 
+  const handleCopyRecap = async (log: WorkoutLog) => {
+    const lines = [
+      `Workout Vault — ${log.title} (${log.date})`,
+      `Duration: ${formatTimer(log.durationSeconds)} | Volume: ${log.totalVolumeKg.toLocaleString()} ${profile.weightUnit} | +${log.xpEarned} XP`,
+      ...log.entries.map((e) => {
+        const doneSets = e.sets.filter((s) => s.completed);
+        return `• ${e.name}: ${doneSets
+          .map((s) => `${s.weight}${profile.weightUnit}×${s.reps}${s.rpe ? `@RPE${s.rpe}` : ''}`)
+          .join(', ')}`;
+      }),
+      ...(log.prsHit.length > 0 ? ['New PRs:', ...log.prsHit.map((p) => `  - ${p}`)] : []),
+    ];
+
+    try {
+      await navigator.clipboard.writeText(lines.join('\n'));
+      setCopiedRecap(true);
+      window.setTimeout(() => setCopiedRecap(false), 2500);
+    } catch {
+      // Clipboard blocked
+    }
+  };
+
   const liveVolume = useMemo(() => calculateSessionVolumeKg(entries), [entries]);
   const completedSetCount = useMemo(
     () => entries.reduce((sum, e) => sum + e.sets.filter((s) => s.completed).length, 0),
@@ -244,7 +337,7 @@ export const TrackerView: React.FC = () => {
             Workout Tracker
           </h1>
           <p className="text-sm text-zinc-400 mt-1">
-            Log sets, weights, and reps with live Progressive Overload cues and automatic PR detection.
+            Log sets, weights, reps, and RPE with Progressive Overload cues, plate loading, and PR detection.
           </p>
         </div>
 
@@ -290,9 +383,24 @@ export const TrackerView: React.FC = () => {
         </div>
 
         <div className="rounded-2xl bg-zinc-900/65 border border-white/10 p-4">
-          <div className="text-xs text-zinc-400 flex items-center gap-1.5">
-            <Timer className="w-3.5 h-3.5 text-[#A855F7]" />
-            Rest Timer
+          <div className="text-xs text-zinc-400 flex items-center justify-between gap-1.5">
+            <span className="inline-flex items-center gap-1.5">
+              <Timer className="w-3.5 h-3.5 text-[#A855F7]" />
+              Rest Timer
+            </span>
+            <button
+              type="button"
+              onClick={() => setChimeEnabled((v) => !v)}
+              aria-label={chimeEnabled ? 'Mute rest chime' : 'Enable rest chime'}
+              title={chimeEnabled ? 'Rest chime on' : 'Rest chime muted'}
+              className="text-zinc-400 hover:text-white"
+            >
+              {chimeEnabled ? (
+                <Volume2 className="w-3.5 h-3.5 text-[#00FF88]" />
+              ) : (
+                <VolumeX className="w-3.5 h-3.5 text-zinc-500" />
+              )}
+            </button>
           </div>
           <div className="flex items-center justify-between mt-1">
             <span className="text-2xl font-bold font-mono text-white">
@@ -341,13 +449,23 @@ export const TrackerView: React.FC = () => {
                 </p>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => setCompletedSummary(null)}
-              className="px-3.5 py-2 rounded-xl bg-zinc-900 text-xs font-medium text-white border border-white/10 self-start"
-            >
-              Dismiss
-            </button>
+            <div className="flex items-center gap-2 self-start">
+              <button
+                type="button"
+                onClick={() => void handleCopyRecap(completedSummary)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-zinc-950 text-xs font-medium text-[#00FF88] border border-[#00FF88]/30 hover:border-[#00FF88]"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                {copiedRecap ? 'Copied Recap!' : 'Copy Recap'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setCompletedSummary(null)}
+                className="px-3.5 py-2 rounded-xl bg-zinc-900 text-xs font-medium text-white border border-white/10"
+              >
+                Dismiss
+              </button>
+            </div>
           </div>
 
           {completedSummary.prsHit.length > 0 && (
@@ -372,7 +490,7 @@ export const TrackerView: React.FC = () => {
       {entries.length === 0 ? (
         <div className="rounded-2xl bg-zinc-900/50 border border-white/10 p-10 text-center space-y-4">
           <p className="text-sm text-zinc-300">
-            {WEEKDAY_LABELS[selectedDay]} is currently a {plans[selectedDay].category} with no exercises.
+            {WEEKDAY_LABELS[selectedDay]} is currently empty with no planned exercises.
           </p>
           <button
             type="button"
@@ -408,8 +526,24 @@ export const TrackerView: React.FC = () => {
                     <h2 className="text-lg font-semibold text-white mt-0.5">{entry.name}</h2>
                   </div>
 
-                  {/* Progressive Overload Assistant */}
+                  {/* Progressive Overload Assistant & Plate Loader */}
                   <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPlateCalcTarget({
+                          exIdx,
+                          name: entry.name,
+                          weight: entry.sets[0]?.weight || 60,
+                          reps: entry.sets[0]?.reps || 8,
+                        })
+                      }
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-950 border border-white/10 text-xs font-medium text-[#A855F7] hover:border-[#A855F7]/50"
+                    >
+                      <Calculator className="w-3.5 h-3.5" />
+                      Plates &amp; Warm-Up
+                    </button>
+
                     <div
                       className={`text-xs px-3 py-1.5 rounded-xl border flex items-center gap-2 ${
                         overload.shouldIncrease
@@ -435,9 +569,10 @@ export const TrackerView: React.FC = () => {
                 {/* Sets Table */}
                 <div className="space-y-2">
                   <div className="grid grid-cols-12 gap-2 text-xs text-zinc-500 font-mono px-2">
-                    <div className="col-span-2">SET</div>
+                    <div className="col-span-1">SET</div>
                     <div className="col-span-4">WEIGHT ({profile.weightUnit.toUpperCase()})</div>
-                    <div className="col-span-4">REPS</div>
+                    <div className="col-span-3">REPS</div>
+                    <div className="col-span-2">RPE</div>
                     <div className="col-span-2 text-right">DONE</div>
                   </div>
 
@@ -450,7 +585,7 @@ export const TrackerView: React.FC = () => {
                           : 'bg-zinc-950/70 border-white/10'
                       }`}
                     >
-                      <div className="col-span-2 font-mono text-sm font-semibold text-zinc-300 pl-1">
+                      <div className="col-span-1 font-mono text-sm font-semibold text-zinc-300 pl-1">
                         {s.setNumber}
                       </div>
                       <div className="col-span-4">
@@ -466,7 +601,7 @@ export const TrackerView: React.FC = () => {
                           className="w-full rounded-lg bg-zinc-900 border border-white/10 px-2.5 py-1.5 text-sm font-mono text-white focus:outline-none focus:border-[#00FF88]"
                         />
                       </div>
-                      <div className="col-span-4">
+                      <div className="col-span-3">
                         <input
                           type="number"
                           min={0}
@@ -477,6 +612,21 @@ export const TrackerView: React.FC = () => {
                           }
                           className="w-full rounded-lg bg-zinc-900 border border-white/10 px-2.5 py-1.5 text-sm font-mono text-white focus:outline-none focus:border-[#00FF88]"
                         />
+                      </div>
+                      <div className="col-span-2">
+                        <select
+                          aria-label={`${entry.name} set ${s.setNumber} RPE`}
+                          value={s.rpe ?? ''}
+                          onChange={(e) => updateSetRpe(exIdx, setIdx, e.target.value)}
+                          className="w-full rounded-lg bg-zinc-900 border border-white/10 px-1.5 py-1.5 text-xs font-mono text-zinc-200 focus:outline-none focus:border-[#A855F7]"
+                        >
+                          <option value="">—</option>
+                          {[6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10].map((val) => (
+                            <option key={val} value={val}>
+                              {val}
+                            </option>
+                          ))}
+                        </select>
                       </div>
                       <div className="col-span-2 flex justify-end">
                         <button
@@ -527,10 +677,22 @@ export const TrackerView: React.FC = () => {
               className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-[#00FF88] text-zinc-950 text-sm font-bold hover:bg-[#00FF88]/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               <Check className="w-4 h-4" />
-              Finish & Save Workout ({completedSetCount} sets)
+              Finish &amp; Save Workout ({completedSetCount} sets)
             </button>
           </div>
         </div>
+      )}
+
+      {/* Plate Calculator Modal */}
+      {plateCalcTarget && (
+        <PlateCalculatorModal
+          initialWeight={plateCalcTarget.weight}
+          initialReps={plateCalcTarget.reps}
+          unit={profile.weightUnit}
+          exerciseName={plateCalcTarget.name}
+          onClose={() => setPlateCalcTarget(null)}
+          onApplyWeight={(w) => applySuggestedWeight(plateCalcTarget.exIdx, w)}
+        />
       )}
 
       {/* Add Exercise Picker Modal */}
@@ -566,9 +728,24 @@ export const TrackerView: React.FC = () => {
                         name: ex.name,
                         targetMuscle: ex.muscleGroup,
                         sets: [
-                          { setNumber: 1, weight: 40, reps: 10, completed: false },
-                          { setNumber: 2, weight: 40, reps: 10, completed: false },
-                          { setNumber: 3, weight: 40, reps: 10, completed: false },
+                          {
+                            setNumber: 1,
+                            weight: ex.equipment === 'Bodyweight' ? 0 : 40,
+                            reps: 10,
+                            completed: false,
+                          },
+                          {
+                            setNumber: 2,
+                            weight: ex.equipment === 'Bodyweight' ? 0 : 40,
+                            reps: 10,
+                            completed: false,
+                          },
+                          {
+                            setNumber: 3,
+                            weight: ex.equipment === 'Bodyweight' ? 0 : 40,
+                            reps: 10,
+                            completed: false,
+                          },
                         ],
                       },
                     ]);

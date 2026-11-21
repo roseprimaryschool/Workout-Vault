@@ -1,17 +1,24 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
+  ArrowDown,
   ArrowRight,
+  ArrowUp,
+  Bot,
+  Calculator,
   CalendarPlus,
+  Copy,
   Dumbbell,
   GripVertical,
   Play,
   Plus,
+  RotateCcw,
   SlidersHorizontal,
   Sparkles,
   Trash2,
   X,
 } from 'lucide-react';
 import { useVault } from '../context/VaultContext';
+import { DEFAULT_WEEKLY_PLANS } from '../data/exercises';
 import {
   DayPlan,
   Exercise,
@@ -23,6 +30,7 @@ import {
   WEEKDAY_LABELS,
 } from '../types/workout';
 import { computeProgressiveOverload } from '../utils/workoutMath';
+import { PlateCalculatorModal } from './PlateCalculatorModal';
 
 const CATEGORY_COLORS: Record<PlanCategory, { dot: string; text: string; border: string; bg: string }> = {
   Push: { dot: 'bg-[#00FF88]', text: 'text-[#00FF88]', border: 'border-[#00FF88]/25', bg: 'bg-[#00FF88]/10' },
@@ -60,9 +68,10 @@ const GENERATOR_STYLES: { style: GeneratorStyle; subtitle: string; days: string 
 
 interface PlannerViewProps {
   onStartWorkout: (day: Weekday) => void;
+  onOpenCoach?: () => void;
 }
 
-export const PlannerView: React.FC<PlannerViewProps> = ({ onStartWorkout }) => {
+export const PlannerView: React.FC<PlannerViewProps> = ({ onStartWorkout, onOpenCoach }) => {
   const {
     plans,
     logs,
@@ -72,17 +81,26 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartWorkout }) => {
     updateDayPlan,
     moveExerciseBetweenDays,
     applyGeneratorSplit,
+    applyPlansBatch,
   } = useVault();
 
   const [dragPayload, setDragPayload] = useState<{ fromDay: Weekday; plannedId: string } | null>(null);
   const [dragOverDay, setDragOverDay] = useState<Weekday | null>(null);
 
-  // Modals
+  // Modals & Popovers
   const [editingDay, setEditingDay] = useState<Weekday | null>(null);
+  const [cloneTargetDay, setCloneTargetDay] = useState<Weekday>('thursday');
   const [editingExercise, setEditingExercise] = useState<{ day: Weekday; item: PlannedExercise } | null>(null);
+  const [showPlateCalc, setShowPlateCalc] = useState(false);
   const [addTargetDay, setAddTargetDay] = useState<Weekday | null>(null);
   const [addSearch, setAddSearch] = useState('');
   const [showGenerator, setShowGenerator] = useState(false);
+  const [confirmClearWeek, setConfirmClearWeek] = useState(false);
+
+  const totalWeeklyExercises = useMemo(
+    () => WEEKDAYS.reduce((sum, d) => sum + plans[d].exercises.length, 0),
+    [plans]
+  );
 
   const handleDropOnDay = async (toDay: Weekday) => {
     setDragOverDay(null);
@@ -108,12 +126,25 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartWorkout }) => {
     const nextPlan: DayPlan = {
       ...plan,
       category: plan.category === 'Rest Day' ? 'Full Body' : plan.category,
-      title: plan.category === 'Rest Day' ? `${WEEKDAY_LABELS[day]} Training` : plan.title,
+      title:
+        plan.category === 'Rest Day' || plan.title === 'Open Day'
+          ? `${WEEKDAY_LABELS[day]} Training`
+          : plan.title,
       exercises: [...plan.exercises, newPlanned],
     };
     await updateDayPlan(day, nextPlan);
     setAddTargetDay(null);
     setAddSearch('');
+  };
+
+  const handleReorderExercise = async (day: Weekday, index: number, direction: -1 | 1) => {
+    const plan = plans[day];
+    const targetIdx = index + direction;
+    if (targetIdx < 0 || targetIdx >= plan.exercises.length) return;
+    const nextList = [...plan.exercises];
+    const [moved] = nextList.splice(index, 1);
+    nextList.splice(targetIdx, 0, moved);
+    await updateDayPlan(day, { ...plan, exercises: nextList });
   };
 
   const handleRemoveExercise = async (day: Weekday, plannedId: string) => {
@@ -122,6 +153,27 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartWorkout }) => {
       ...plan,
       exercises: plan.exercises.filter((e) => e.id !== plannedId),
     });
+  };
+
+  const handleCloneDayTo = async (sourceDay: Weekday, destinationDay: Weekday) => {
+    if (sourceDay === destinationDay) return;
+    const source = plans[sourceDay];
+    const clonedExercises: PlannedExercise[] = source.exercises.map((ex, i) => ({
+      ...ex,
+      id: `${destinationDay}-${ex.exerciseId}-${Date.now().toString(36)}-${i}`,
+    }));
+    await updateDayPlan(destinationDay, {
+      day: destinationDay,
+      category: source.category,
+      title: source.title,
+      exercises: clonedExercises,
+    });
+    setEditingDay(null);
+  };
+
+  const handleClearEntireWeek = async () => {
+    await applyPlansBatch(DEFAULT_WEEKLY_PLANS);
+    setConfirmClearWeek(false);
   };
 
   const handleSaveEditedExercise = async (e: React.FormEvent) => {
@@ -151,27 +203,94 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartWorkout }) => {
             Weekly Workout Planner
           </h1>
           <p className="text-sm text-zinc-400 mt-1">
-            Drag exercises between days, fine-tune sets, tempo, and rest, or generate a structured split.
+            Build your Monday–Sunday split from scratch, drag exercises between days, or let AI design a plan.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <span className="text-xs font-mono text-zinc-400">
+
+        <div className="flex flex-wrap items-center gap-2.5">
+          <span className="text-xs font-mono text-zinc-400 mr-1">
             {syncStatus === 'synced'
               ? 'Cloud synced'
               : syncStatus === 'syncing'
-              ? 'Syncing changes...'
+              ? 'Syncing...'
               : 'Auto-saved locally'}
           </span>
+
+          {totalWeeklyExercises > 0 && (
+            confirmClearWeek ? (
+              <div className="inline-flex items-center gap-1.5 rounded-xl bg-rose-500/15 border border-rose-500/40 px-2.5 py-1.5">
+                <span className="text-xs text-rose-200">Clear all 7 days?</span>
+                <button
+                  type="button"
+                  onClick={() => void handleClearEntireWeek()}
+                  className="px-2 py-1 rounded-lg bg-rose-500 text-white text-xs font-semibold hover:bg-rose-400"
+                >
+                  Confirm
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmClearWeek(false)}
+                  className="px-2 py-1 rounded-lg bg-zinc-800 text-zinc-300 text-xs hover:text-white"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmClearWeek(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-zinc-900 border border-white/10 text-xs font-medium text-zinc-300 hover:text-rose-300 hover:border-rose-500/40 transition-colors"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                Clear Week
+              </button>
+            )
+          )}
+
           <button
             type="button"
             onClick={() => setShowGenerator(true)}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-900 border border-white/10 text-sm font-medium text-zinc-100 hover:border-[#A855F7]/50 hover:text-white transition-colors whitespace-nowrap"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-zinc-900 border border-white/10 text-sm font-medium text-zinc-100 hover:border-[#A855F7]/50 hover:text-white transition-colors whitespace-nowrap"
           >
             <Sparkles className="w-4 h-4 text-[#A855F7]" />
             Quick Split Generator
           </button>
         </div>
       </div>
+
+      {/* Empty Week Onboarding Banner */}
+      {totalWeeklyExercises === 0 && (
+        <div className="rounded-2xl bg-zinc-900/75 border border-[#00FF88]/25 p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <h2 className="text-base font-semibold text-white">
+              Your Weekly Planner is Clean &amp; Ready
+            </h2>
+            <p className="text-xs text-zinc-400">
+              All 7 days start empty. Click &ldquo;Add Exercise&rdquo; on any day card, pick a template in Quick Split Generator, or ask the AI Program Architect to build your week.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowGenerator(true)}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-zinc-950 border border-white/15 text-xs font-semibold text-white hover:border-[#00FF88]"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-[#00FF88]" />
+              Browse Templates
+            </button>
+            {onOpenCoach && (
+              <button
+                type="button"
+                onClick={onOpenCoach}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#A855F7] text-white text-xs font-semibold hover:bg-[#A855F7]/90"
+              >
+                <Bot className="w-3.5 h-3.5" />
+                Build with AI Coach
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Color-Coded Legend */}
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-zinc-400 pb-2 border-b border-white/10">
@@ -231,7 +350,10 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartWorkout }) => {
 
                   <button
                     type="button"
-                    onClick={() => setEditingDay(day)}
+                    onClick={() => {
+                      setEditingDay(day);
+                      setCloneTargetDay(WEEKDAYS.find((d) => d !== day) || 'monday');
+                    }}
                     aria-label={`Configure ${WEEKDAY_LABELS[day]} settings`}
                     className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-white/5 transition-colors shrink-0"
                   >
@@ -245,12 +367,12 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartWorkout }) => {
                     <div className="h-32 flex flex-col items-center justify-center text-center px-3 rounded-xl border border-dashed border-white/10 text-zinc-500 text-xs my-1">
                       <p>
                         {plan.category === 'Rest Day'
-                          ? 'Scheduled recovery day. Drop an exercise here anytime.'
+                          ? 'Empty day. Click Add Exercise or drop one here.'
                           : 'No exercises assigned yet.'}
                       </p>
                     </div>
                   ) : (
-                    plan.exercises.map((item) => {
+                    plan.exercises.map((item, idx) => {
                       const overload = computeProgressiveOverload(item.exerciseId, item, logs);
                       return (
                         <div
@@ -291,14 +413,32 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartWorkout }) => {
                               </div>
                             </div>
 
-                            <div className="flex items-center gap-1 shrink-0">
+                            <div className="flex items-center gap-0.5 shrink-0">
+                              <button
+                                type="button"
+                                disabled={idx === 0}
+                                onClick={() => void handleReorderExercise(day, idx, -1)}
+                                aria-label={`Move ${item.name} up`}
+                                className="p-1 rounded-md text-zinc-500 hover:text-white disabled:opacity-25"
+                              >
+                                <ArrowUp className="w-3 h-3" />
+                              </button>
+                              <button
+                                type="button"
+                                disabled={idx === plan.exercises.length - 1}
+                                onClick={() => void handleReorderExercise(day, idx, 1)}
+                                aria-label={`Move ${item.name} down`}
+                                className="p-1 rounded-md text-zinc-500 hover:text-white disabled:opacity-25"
+                              >
+                                <ArrowDown className="w-3 h-3" />
+                              </button>
                               <select
                                 aria-label={`Move ${item.name} to another day`}
                                 value={day}
                                 onChange={(e) =>
                                   void moveExerciseBetweenDays(day, e.target.value as Weekday, item.id)
                                 }
-                                className="bg-zinc-950 border border-white/10 rounded-md text-[11px] text-zinc-300 px-1.5 py-1 focus:outline-none focus:border-[#00FF88]"
+                                className="bg-zinc-950 border border-white/10 rounded-md text-[11px] text-zinc-300 px-1 py-0.5 ml-0.5 focus:outline-none focus:border-[#00FF88]"
                               >
                                 {WEEKDAYS.map((d) => (
                                   <option key={d} value={d}>
@@ -310,7 +450,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartWorkout }) => {
                                 type="button"
                                 onClick={() => void handleRemoveExercise(day, item.id)}
                                 aria-label={`Remove ${item.name} from ${WEEKDAY_LABELS[day]}`}
-                                className="p-1.5 rounded-md text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
+                                className="p-1 rounded-md text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
@@ -350,7 +490,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartWorkout }) => {
         })}
       </div>
 
-      {/* Edit Day Settings Modal */}
+      {/* Edit Day Settings & Clone Modal */}
       {editingDay && (
         <div
           className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
@@ -414,6 +554,35 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartWorkout }) => {
                   }
                   className="w-full rounded-xl bg-zinc-950 border border-white/10 px-3 py-2.5 text-sm text-white focus:outline-none focus:border-[#00FF88]"
                 />
+              </div>
+
+              {/* Duplicate Day To Another Day */}
+              <div className="pt-3 border-t border-white/10 space-y-2">
+                <label htmlFor="clone-day" className="block text-xs font-medium text-zinc-400">
+                  Duplicate {WEEKDAY_LABELS[editingDay]}&apos;s Workout To
+                </label>
+                <div className="flex gap-2">
+                  <select
+                    id="clone-day"
+                    value={cloneTargetDay}
+                    onChange={(e) => setCloneTargetDay(e.target.value as Weekday)}
+                    className="flex-1 rounded-xl bg-zinc-950 border border-white/10 px-3 py-2 text-sm text-white focus:outline-none focus:border-[#00FF88]"
+                  >
+                    {WEEKDAYS.filter((d) => d !== editingDay).map((d) => (
+                      <option key={d} value={d}>
+                        {WEEKDAY_LABELS[d]}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => void handleCloneDayTo(editingDay, cloneTargetDay)}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-zinc-800 text-xs font-semibold text-white hover:bg-zinc-700"
+                  >
+                    <Copy className="w-3.5 h-3.5 text-[#00FF88]" />
+                    Clone Day
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -567,7 +736,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartWorkout }) => {
 
             <div>
               <label htmlFor="wb-notes" className="block text-xs text-zinc-400 mb-1">
-                Coaching Notes & Cues
+                Coaching Notes &amp; Cues
               </label>
               <textarea
                 id="wb-notes"
@@ -584,23 +753,50 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartWorkout }) => {
               />
             </div>
 
-            <div className="flex justify-end gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <button
                 type="button"
-                onClick={() => setEditingExercise(null)}
-                className="px-4 py-2 rounded-xl bg-zinc-800 text-zinc-200 text-sm font-medium hover:bg-zinc-700"
+                onClick={() => setShowPlateCalc(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-zinc-950 border border-white/10 text-xs font-medium text-[#A855F7] hover:border-[#A855F7]/50"
               >
-                Cancel
+                <Calculator className="w-3.5 h-3.5" />
+                Plate &amp; Warm-Up Calc
               </button>
-              <button
-                type="submit"
-                className="px-5 py-2 rounded-xl bg-[#00FF88] text-zinc-950 text-sm font-semibold hover:bg-[#00FF88]/90"
-              >
-                Save Exercise
-              </button>
+
+              <div className="flex items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setEditingExercise(null)}
+                  className="px-4 py-2 rounded-xl bg-zinc-800 text-zinc-200 text-sm font-medium hover:bg-zinc-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 rounded-xl bg-[#00FF88] text-zinc-950 text-sm font-semibold hover:bg-[#00FF88]/90"
+                >
+                  Save Exercise
+                </button>
+              </div>
             </div>
           </form>
         </div>
+      )}
+
+      {/* Plate Loader & Warm-Up Modal */}
+      {showPlateCalc && editingExercise && (
+        <PlateCalculatorModal
+          initialWeight={editingExercise.item.weight}
+          initialReps={editingExercise.item.reps}
+          unit={profile.weightUnit}
+          exerciseName={editingExercise.item.name}
+          onClose={() => setShowPlateCalc(false)}
+          onApplyWeight={(nextWeight) =>
+            setEditingExercise((prev) =>
+              prev ? { ...prev, item: { ...prev.item, weight: nextWeight } } : null
+            )
+          }
+        />
       )}
 
       {/* Add Exercise Picker Modal */}
@@ -678,7 +874,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({ onStartWorkout }) => {
                   Quick Workout Generator
                 </h3>
                 <p className="text-xs text-zinc-400 mt-1">
-                  Replace your Monday–Sunday planner with a proven training split.
+                  Populate your Monday–Sunday planner with a proven training split.
                 </p>
               </div>
               <button

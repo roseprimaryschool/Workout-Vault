@@ -1,23 +1,27 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import {
   User,
+  getRedirectResult,
   onAuthStateChanged,
   signInWithPopup,
+  signInWithRedirect,
   signOut,
 } from 'firebase/auth';
 import {
   collection,
+  deleteDoc,
   doc,
   getDoc,
   onSnapshot,
+  query,
   serverTimestamp,
   setDoc,
-  deleteDoc,
+  updateDoc,
+  where,
 } from 'firebase/firestore';
 import {
   DEFAULT_WEEKLY_PLANS,
   EXERCISE_LIBRARY,
-  createSeedWorkoutLogs,
 } from '../data/exercises';
 import {
   OperationType,
@@ -49,16 +53,60 @@ import {
   computeTrainingStreak,
 } from '../utils/workoutMath';
 
-const STORAGE_KEYS = {
-  PLANS: 'workout_vault_plans_v1',
-  LOGS: 'workout_vault_logs_v1',
-  CUSTOM: 'workout_vault_custom_exercises_v1',
-  PROFILE: 'workout_vault_profile_v1',
-};
+const LEGACY_KEYS = [
+  'workout_vault_plans_v1',
+  'workout_vault_logs_v1',
+  'workout_vault_custom_exercises_v1',
+  'workout_vault_profile_v1',
+];
+
+function userStorageKey(uid: string, suffix: string): string {
+  return `workout_vault_v2_${uid}_${suffix}`;
+}
+
+function createEmptyProfile(firebaseUser?: User | null): UserProfile {
+  return {
+    uid: firebaseUser?.uid || '',
+    displayName: firebaseUser?.displayName || 'Vault Athlete',
+    email: firebaseUser?.email || '',
+    weightUnit: 'kg' as WeightUnit,
+    goal: 'Hypertrophy & Progressive Strength',
+    xp: 0,
+    streakDays: 0,
+    unlockedAchievements: [],
+  };
+}
+
+export function formatFirebaseAuthError(error: unknown): string {
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code?: string }).code)
+      : '';
+  const hostname = typeof window !== 'undefined' ? window.location.hostname : 'this domain';
+
+  if (code === 'auth/unauthorized-domain') {
+    return `Domain "${hostname}" is not authorized for Firebase sign-in. Add "${hostname}" in Firebase Console → Authentication → Settings → Authorized domains.`;
+  }
+  if (code === 'auth/popup-blocked') {
+    return 'Browser blocked the Google sign-in popup. Redirect sign-in is available below.';
+  }
+  if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+    return 'Google sign-in popup was closed before completion. Try again or use Redirect Sign-In.';
+  }
+  if (code === 'auth/network-request-failed') {
+    return 'Network error while contacting Google sign-in. Check your connection and retry.';
+  }
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return 'Unable to sign in with Google right now.';
+}
 
 interface VaultContextValue {
   user: User | null;
   authReady: boolean;
+  authError: string | null;
+  clearAuthError: () => void;
   syncStatus: 'local' | 'syncing' | 'synced';
   profile: UserProfile;
   plans: Record<Weekday, DayPlan>;
@@ -66,6 +114,7 @@ interface VaultContextValue {
   allExercises: Exercise[];
   customExercises: Exercise[];
   signInWithGoogle: () => Promise<void>;
+  signInWithGoogleRedirect: () => Promise<void>;
   signOutUser: () => Promise<void>;
   updateProfile: (patch: Partial<UserProfile>) => Promise<void>;
   updateDayPlan: (day: Weekday, updated: DayPlan) => Promise<void>;
@@ -75,6 +124,7 @@ interface VaultContextValue {
     plannedId: string
   ) => Promise<void>;
   applyGeneratorSplit: (style: GeneratorStyle) => Promise<void>;
+  applyPlansBatch: (nextPlans: Record<Weekday, DayPlan>) => Promise<void>;
   addCustomExercise: (exercise: Exercise) => Promise<void>;
   deleteCustomExercise: (id: string) => Promise<void>;
   saveWorkoutLog: (log: WorkoutLog) => Promise<void>;
@@ -86,9 +136,9 @@ interface VaultContextValue {
 
 const VaultContext = createContext<VaultContextValue | null>(null);
 
-function loadLocalJson<T>(key: string, fallback: T): T {
+function loadUserJson<T>(uid: string, suffix: string, fallback: T): T {
   try {
-    const raw = localStorage.getItem(key);
+    const raw = localStorage.getItem(userStorageKey(uid, suffix));
     if (!raw) return fallback;
     return JSON.parse(raw) as T;
   } catch {
@@ -101,71 +151,88 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({
 }) => {
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [syncStatus, setSyncStatus] = useState<'local' | 'syncing' | 'synced'>('local');
 
-  const [plans, setPlans] = useState<Record<Weekday, DayPlan>>(() =>
-    loadLocalJson(STORAGE_KEYS.PLANS, DEFAULT_WEEKLY_PLANS)
-  );
-  const [logs, setLogs] = useState<WorkoutLog[]>(() =>
-    loadLocalJson(STORAGE_KEYS.LOGS, createSeedWorkoutLogs())
-  );
-  const [customExercises, setCustomExercises] = useState<Exercise[]>(() =>
-    loadLocalJson(STORAGE_KEYS.CUSTOM, [])
-  );
-  const [profile, setProfile] = useState<UserProfile>(() =>
-    loadLocalJson(STORAGE_KEYS.PROFILE, {
-      uid: 'guest',
-      displayName: 'Guest Athlete',
-      email: '',
-      weightUnit: 'kg' as WeightUnit,
-      goal: 'Hypertrophy & Progressive Strength',
-      xp: 790,
-      streakDays: 4,
-      unlockedAchievements: ['first-workout', '1000kg-lifted'],
-    })
-  );
+  const [plans, setPlans] = useState<Record<Weekday, DayPlan>>(DEFAULT_WEEKLY_PLANS);
+  const [logs, setLogs] = useState<WorkoutLog[]>([]);
+  const [customExercises, setCustomExercises] = useState<Exercise[]>([]);
+  const [profile, setProfile] = useState<UserProfile>(() => createEmptyProfile(null));
   const [activeTrackerDay, setActiveTrackerDay] = useState<Weekday | null>(null);
 
-  // Persist local cache immediately on change
+  // Clear legacy seeded localStorage keys once so old fake data never lingers
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEYS.PLANS, JSON.stringify(plans));
+      for (const key of LEGACY_KEYS) {
+        localStorage.removeItem(key);
+      }
+    } catch {
+      // Ignore storage access errors
+    }
+  }, []);
+
+  // Complete any pending redirect auth flow (used on Vercel / mobile browsers)
+  useEffect(() => {
+    getRedirectResult(auth).catch((err) => {
+      setAuthError(formatFirebaseAuthError(err));
+    });
+  }, []);
+
+  // Persist user-scoped local cache only while authenticated
+  useEffect(() => {
+    if (!user) return;
+    try {
+      localStorage.setItem(userStorageKey(user.uid, 'plans'), JSON.stringify(plans));
     } catch {
       // Ignore storage quota errors
     }
-  }, [plans]);
+  }, [plans, user]);
 
   useEffect(() => {
+    if (!user) return;
     try {
-      localStorage.setItem(STORAGE_KEYS.LOGS, JSON.stringify(logs));
+      localStorage.setItem(userStorageKey(user.uid, 'logs'), JSON.stringify(logs));
     } catch {
       // Ignore storage quota errors
     }
-  }, [logs]);
+  }, [logs, user]);
 
   useEffect(() => {
+    if (!user) return;
     try {
-      localStorage.setItem(STORAGE_KEYS.CUSTOM, JSON.stringify(customExercises));
+      localStorage.setItem(userStorageKey(user.uid, 'custom'), JSON.stringify(customExercises));
     } catch {
       // Ignore storage quota errors
     }
-  }, [customExercises]);
+  }, [customExercises, user]);
 
   useEffect(() => {
+    if (!user) return;
     try {
-      localStorage.setItem(STORAGE_KEYS.PROFILE, JSON.stringify(profile));
+      localStorage.setItem(userStorageKey(user.uid, 'profile'), JSON.stringify(profile));
     } catch {
       // Ignore storage quota errors
     }
-  }, [profile]);
+  }, [profile, user]);
 
   // Listen to Firebase Auth state
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (firebaseUser) => {
       setUser(firebaseUser);
       setAuthReady(true);
+
       if (!firebaseUser) {
         setSyncStatus('local');
+        setPlans(DEFAULT_WEEKLY_PLANS);
+        setLogs([]);
+        setCustomExercises([]);
+        setProfile(createEmptyProfile(null));
+      } else {
+        setAuthError(null);
+        setPlans(loadUserJson(firebaseUser.uid, 'plans', DEFAULT_WEEKLY_PLANS));
+        setLogs(loadUserJson(firebaseUser.uid, 'logs', []));
+        setCustomExercises(loadUserJson(firebaseUser.uid, 'custom', []));
+        setProfile(loadUserJson(firebaseUser.uid, 'profile', createEmptyProfile(firebaseUser)));
       }
     });
     return () => unsub();
@@ -183,16 +250,7 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({
       try {
         const snap = await getDoc(userRef);
         if (!snap.exists()) {
-          const initialProfile: UserProfile = {
-            uid: user.uid,
-            displayName: user.displayName || profile.displayName || 'Vault Athlete',
-            email: user.email || '',
-            weightUnit: profile.weightUnit,
-            goal: profile.goal,
-            xp: profile.xp,
-            streakDays: profile.streakDays,
-            unlockedAchievements: profile.unlockedAchievements,
-          };
+          const initialProfile = createEmptyProfile(user);
           const clean = sanitizeUserProfileForFirestore(initialProfile);
           await setDoc(userRef, {
             ...clean,
@@ -200,11 +258,11 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({
             updatedAt: serverTimestamp(),
           });
 
-          // Seed initial plans for new cloud user
+          // Seed starter weekly schedule template (zero fake workout logs)
           await Promise.all(
             WEEKDAYS.map((day) => {
               const planRef = doc(db, 'users', user.uid, 'plans', day);
-              const cleanPlan = sanitizeDayPlanForFirestore(plans[day], user.uid);
+              const cleanPlan = sanitizeDayPlanForFirestore(DEFAULT_WEEKLY_PLANS[day], user.uid);
               return setDoc(planRef, {
                 ...cleanPlan,
                 updatedAt: serverTimestamp(),
@@ -230,7 +288,7 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({
             displayName: String(d.displayName || user.displayName || 'Vault Athlete'),
             email: String(d.email || user.email || ''),
             weightUnit: d.weightUnit === 'lbs' ? 'lbs' : 'kg',
-            goal: String(d.goal || 'Strength & Hypertrophy'),
+            goal: String(d.goal || 'Hypertrophy & Progressive Strength'),
             xp: Number(d.xp || 0),
             streakDays: Number(d.streakDays || 0),
             unlockedAchievements: Array.isArray(d.unlockedAchievements)
@@ -246,7 +304,7 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({
     );
 
     const unsubPlans = onSnapshot(
-      collection(db, 'users', user.uid, 'plans'),
+      query(collection(db, 'users', user.uid, 'plans'), where('userId', '==', user.uid)),
       (snap) => {
         if (cancelled || snap.empty) return;
         setPlans((prev) => {
@@ -272,7 +330,7 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({
     );
 
     const unsubLogs = onSnapshot(
-      collection(db, 'users', user.uid, 'logs'),
+      query(collection(db, 'users', user.uid, 'logs'), where('userId', '==', user.uid)),
       (snap) => {
         if (cancelled) return;
         const cloudLogs: WorkoutLog[] = [];
@@ -292,9 +350,17 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({
             prsHit: Array.isArray(d.prsHit) ? d.prsHit : [],
           });
         });
-        if (cloudLogs.length > 0) {
-          cloudLogs.sort((a, b) => b.date.localeCompare(a.date));
-          setLogs(cloudLogs);
+        cloudLogs.sort((a, b) => b.date.localeCompare(a.date));
+        setLogs(cloudLogs);
+
+        // If account has zero real logs, reconcile any legacy stale gamification counters
+        if (cloudLogs.length === 0) {
+          setProfile((prev) => {
+            if (prev.xp === 0 && prev.streakDays === 0 && prev.unlockedAchievements.length === 0) {
+              return prev;
+            }
+            return { ...prev, xp: 0, streakDays: 0, unlockedAchievements: [] };
+          });
         }
       },
       (error) => {
@@ -303,7 +369,7 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({
     );
 
     const unsubCustom = onSnapshot(
-      collection(db, 'users', user.uid, 'customExercises'),
+      query(collection(db, 'users', user.uid, 'customExercises'), where('userId', '==', user.uid)),
       (snap) => {
         if (cancelled) return;
         const list: Exercise[] = [];
@@ -345,7 +411,43 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({
   }, [authReady, user]);
 
   const signInWithGoogle = async () => {
-    await signInWithPopup(auth, googleProvider);
+    setAuthError(null);
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (err) {
+      const code =
+        typeof err === 'object' && err !== null && 'code' in err
+          ? String((err as { code?: string }).code)
+          : '';
+      // Fall back to redirect when popups are blocked or unsupported (e.g. mobile/Vercel browsers)
+      if (
+        code === 'auth/popup-blocked' ||
+        code === 'auth/operation-not-supported-in-this-environment'
+      ) {
+        try {
+          await signInWithRedirect(auth, googleProvider);
+          return;
+        } catch (redirectErr) {
+          const msg = formatFirebaseAuthError(redirectErr);
+          setAuthError(msg);
+          throw new Error(msg);
+        }
+      }
+      const msg = formatFirebaseAuthError(err);
+      setAuthError(msg);
+      throw new Error(msg);
+    }
+  };
+
+  const signInWithGoogleRedirect = async () => {
+    setAuthError(null);
+    try {
+      await signInWithRedirect(auth, googleProvider);
+    } catch (err) {
+      const msg = formatFirebaseAuthError(err);
+      setAuthError(msg);
+      throw new Error(msg);
+    }
   };
 
   const signOutUser = async () => {
@@ -360,10 +462,21 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({
       setSyncStatus('syncing');
       const path = `users/${user.uid}`;
       try {
-        const clean = sanitizeUserProfileForFirestore({ ...next, uid: user.uid, email: user.email || next.email });
-        await setDoc(
-          doc(db, 'users', user.uid),
-          {
+        const userRef = doc(db, 'users', user.uid);
+        const clean = sanitizeUserProfileForFirestore({
+          ...next,
+          uid: user.uid,
+          email: user.email || next.email,
+        });
+        const snap = await getDoc(userRef);
+        if (!snap.exists()) {
+          await setDoc(userRef, {
+            ...clean,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          await updateDoc(userRef, {
             displayName: clean.displayName,
             weightUnit: clean.weightUnit,
             goal: clean.goal,
@@ -371,9 +484,8 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({
             streakDays: clean.streakDays,
             unlockedAchievements: clean.unlockedAchievements,
             updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        );
+          });
+        }
         setSyncStatus('synced');
       } catch (err) {
         handleFirestoreError(err, OperationType.UPDATE, path);
@@ -444,6 +556,16 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({
     if (user) {
       setSyncStatus('syncing');
       await Promise.all(WEEKDAYS.map((day) => updateDayPlan(day, generated[day])));
+      setSyncStatus('synced');
+    }
+  };
+
+  const applyPlansBatch = async (nextPlans: Record<Weekday, DayPlan>) => {
+    setPlans(nextPlans);
+
+    if (user) {
+      setSyncStatus('syncing');
+      await Promise.all(WEEKDAYS.map((day) => updateDayPlan(day, nextPlans[day])));
       setSyncStatus('synced');
     }
   };
@@ -532,11 +654,9 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
+  // Resets weekly schedule template without injecting fake workout logs
   const resetDemoData = async () => {
-    const seedLogs = createSeedWorkoutLogs();
     setPlans(DEFAULT_WEEKLY_PLANS);
-    setLogs(seedLogs);
-    setCustomExercises([]);
     if (user) {
       await Promise.all(WEEKDAYS.map((d) => updateDayPlan(d, DEFAULT_WEEKLY_PLANS[d])));
     }
@@ -552,6 +672,8 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({
       value={{
         user,
         authReady,
+        authError,
+        clearAuthError: () => setAuthError(null),
         syncStatus,
         profile,
         plans,
@@ -559,11 +681,13 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({
         allExercises,
         customExercises,
         signInWithGoogle,
+        signInWithGoogleRedirect,
         signOutUser,
         updateProfile,
         updateDayPlan,
         moveExerciseBetweenDays,
         applyGeneratorSplit,
+        applyPlansBatch,
         addCustomExercise,
         deleteCustomExercise,
         saveWorkoutLog,
