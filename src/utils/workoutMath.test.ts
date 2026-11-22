@@ -11,9 +11,12 @@ import {
   computeTrainingSymmetry,
   computeWeeklyVolumeLandmarks,
   detectNewPRs,
+  getDefaultDumbbellCount,
+  getEffectiveEntryWeight,
   getLocalDateISO,
   getTodaysWorkoutLog,
   hasLoggedWorkoutOnDate,
+  isDumbbellExercise,
 } from './workoutMath';
 import { DEFAULT_WEEKLY_PLANS, EXERCISE_LIBRARY } from '../data/exercises';
 import { generateWeeklySplit } from './generator';
@@ -394,3 +397,52 @@ test('EXERCISE_LIBRARY includes all 21 user-requested dumbbell/core/carry exerci
     );
   }
 });
+
+test('dumbbell exercises support 1 Dumbbell vs 2 Dumbbells (same weight) defaults, volume, and PRs', () => {
+  assert.equal(isDumbbellExercise('Dumbbell Bench Press', 'Dumbbell'), true);
+  assert.equal(isDumbbellExercise('Barbell Bench Press', 'Barbell'), false);
+  assert.equal(getDefaultDumbbellCount('dumbbell-bench-press', 'Dumbbell Bench Press'), 2);
+  assert.equal(getDefaultDumbbellCount('dumbbell-goblet-squat', 'Dumbbell Goblet Squat'), 1);
+  assert.equal(getDefaultDumbbellCount('single-arm-dumbbell-row', 'One-Arm Dumbbell Row'), 1);
+
+  assert.equal(getEffectiveEntryWeight(22.5, 2), 45);
+  assert.equal(getEffectiveEntryWeight(22.5, 1), 22.5);
+
+  const dbVolume = calculateSessionVolumeKg([
+    {
+      exerciseId: 'dumbbell-bench-press',
+      name: 'Dumbbell Bench Press',
+      targetMuscle: 'Chest',
+      dumbbellCount: 2,
+      sets: [
+        { setNumber: 1, weight: 20, reps: 10, completed: true },
+        { setNumber: 2, weight: 20, reps: 10, completed: true },
+      ],
+    },
+    {
+      exerciseId: 'dumbbell-goblet-squat',
+      name: 'Dumbbell Goblet Squat',
+      targetMuscle: 'Quads',
+      dumbbellCount: 1,
+      sets: [{ setNumber: 1, weight: 24, reps: 10, completed: true }],
+    },
+  ]);
+  // 20*2*10 * 2 sets = 800kg + 24*1*10 = 240kg => 1040kg
+  assert.equal(dbVolume, 1040);
+
+  const prs = detectNewPRs(
+    [
+      {
+        exerciseId: 'dumbbell-bench-press',
+        name: 'Dumbbell Bench Press',
+        targetMuscle: 'Chest',
+        dumbbellCount: 2,
+        sets: [{ setNumber: 1, weight: 25, reps: 8, completed: true }],
+      },
+    ],
+    []
+  );
+  assert.equal(prs.length, 1);
+  assert.match(prs[0], /25kg×2 = 50kg/);
+});
+

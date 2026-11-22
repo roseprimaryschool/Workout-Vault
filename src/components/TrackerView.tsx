@@ -7,6 +7,7 @@ import {
   Check,
   Clock,
   Copy,
+  Dumbbell,
   ExternalLink,
   History,
   Lock,
@@ -36,8 +37,11 @@ import {
   computePersonalRecords,
   computeProgressiveOverload,
   detectNewPRs,
+  getDefaultDumbbellCount,
+  getEffectiveEntryWeight,
   getLocalDateISO,
   getTodaysWorkoutLog,
+  isDumbbellExercise,
 } from '../utils/workoutMath';
 import { PlateCalculatorModal } from './PlateCalculatorModal';
 
@@ -131,17 +135,22 @@ export const TrackerView: React.FC<TrackerViewProps> = ({ onOpenPlanner }) => {
 
   const buildEntriesFromPlan = (day: Weekday): LoggedExercise[] => {
     const plan = plans[day];
-    return plan.exercises.map((ex) => ({
-      exerciseId: ex.exerciseId,
-      name: ex.name,
-      targetMuscle: ex.targetMuscle,
-      sets: Array.from({ length: ex.sets }, (_, i) => ({
-        setNumber: i + 1,
-        weight: ex.weight,
-        reps: ex.reps,
-        completed: false,
-      })),
-    }));
+    return plan.exercises.map((ex) => {
+      const libEx = allExercises.find((e) => e.id === ex.exerciseId);
+      const isDb = isDumbbellExercise(ex.name, libEx?.equipment);
+      return {
+        exerciseId: ex.exerciseId,
+        name: ex.name,
+        targetMuscle: ex.targetMuscle,
+        ...(isDb ? { dumbbellCount: getDefaultDumbbellCount(ex.exerciseId, ex.name) } : {}),
+        sets: Array.from({ length: ex.sets }, (_, i) => ({
+          setNumber: i + 1,
+          weight: ex.weight,
+          reps: ex.reps,
+          completed: false,
+        })),
+      };
+    });
   };
 
   // Sync if launched from Planner "Start" button
@@ -169,7 +178,7 @@ export const TrackerView: React.FC<TrackerViewProps> = ({ onOpenPlanner }) => {
     if (!sessionActive && !completedSummary) {
       setEntries(buildEntriesFromPlan(selectedDay));
     }
-  }, [selectedDay, plans, sessionActive, completedSummary]);
+  }, [selectedDay, plans, allExercises, sessionActive, completedSummary]);
 
   // Session stopwatch & rest countdown
   useEffect(() => {
@@ -266,6 +275,12 @@ export const TrackerView: React.FC<TrackerViewProps> = ({ onOpenPlanner }) => {
     );
   };
 
+  const setExerciseDumbbellCount = (exIdx: number, count: 1 | 2) => {
+    setEntries((prev) =>
+      prev.map((ex, i) => (i !== exIdx ? ex : { ...ex, dumbbellCount: count }))
+    );
+  };
+
   const matchLastSessionForExercise = (exIdx: number, exerciseId: string) => {
     const sorted = [...logs].sort((a, b) => b.date.localeCompare(a.date));
     let lastEntry: LoggedExercise | undefined;
@@ -287,6 +302,9 @@ export const TrackerView: React.FC<TrackerViewProps> = ({ onOpenPlanner }) => {
         if (i !== exIdx) return ex;
         return {
           ...ex,
+          ...(lastEntry.dumbbellCount === 1 || lastEntry.dumbbellCount === 2
+            ? { dumbbellCount: lastEntry.dumbbellCount }
+            : {}),
           sets: ex.sets.map((s, idx) => {
             if (s.completed) return s;
             const ref = doneSets[Math.min(idx, doneSets.length - 1)];
@@ -370,8 +388,9 @@ export const TrackerView: React.FC<TrackerViewProps> = ({ onOpenPlanner }) => {
       `Duration: ${formatTimer(log.durationSeconds)} | Volume: ${log.totalVolumeKg.toLocaleString()} ${profile.weightUnit} | +${log.xpEarned} XP`,
       ...log.entries.map((e) => {
         const doneSets = e.sets.filter((s) => s.completed);
+        const dbSuffix = e.dumbbellCount === 2 ? '×2' : '';
         return `• ${e.name}: ${doneSets
-          .map((s) => `${s.weight}${profile.weightUnit}×${s.reps}${s.rpe ? `@RPE${s.rpe}` : ''}`)
+          .map((s) => `${s.weight}${profile.weightUnit}${dbSuffix}×${s.reps}${s.rpe ? `@RPE${s.rpe}` : ''}`)
           .join(', ')}`;
       }),
       ...(log.prsHit.length > 0 ? ['New PRs:', ...log.prsHit.map((p) => `  - ${p}`)] : []),
@@ -665,6 +684,12 @@ export const TrackerView: React.FC<TrackerViewProps> = ({ onOpenPlanner }) => {
               tempo: '2-0-1-0',
               notes: '',
             };
+            const libEx = allExercises.find((e) => e.id === entry.exerciseId);
+            const isDumbbell = isDumbbellExercise(entry.name, libEx?.equipment);
+            const dbCount: 1 | 2 =
+              entry.dumbbellCount ||
+              (isDumbbell ? getDefaultDumbbellCount(entry.exerciseId, entry.name) : 1);
+
             const overload = computeProgressiveOverload(entry.exerciseId, planned, logs);
             const muscleReadiness = recoveryByMuscle.get(entry.targetMuscle);
             const exPr = personalRecords[entry.exerciseId];
@@ -701,21 +726,17 @@ export const TrackerView: React.FC<TrackerViewProps> = ({ onOpenPlanner }) => {
                     </div>
                     <div className="flex flex-wrap items-center gap-3 mt-1">
                       <h2 className="text-lg font-semibold text-white">{entry.name}</h2>
-                      {(() => {
-                        const libEx = allExercises.find((e) => e.id === entry.exerciseId);
-                        if (!libEx || libEx.isCustom) return null;
-                        return (
-                          <a
-                            href={libEx.muscleWikiUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 text-xs font-medium text-[#00FF88] hover:underline"
-                          >
-                            MuscleWiki
-                            <ExternalLink className="w-3 h-3" />
-                          </a>
-                        );
-                      })()}
+                      {libEx && !libEx.isCustom && (
+                        <a
+                          href={libEx.muscleWikiUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-xs font-medium text-[#00FF88] hover:underline"
+                        >
+                          MuscleWiki
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      )}
                     </div>
                     <div className="text-[11px] font-mono text-zinc-400 mt-1">
                       Planner Target: {planned.sets} sets × {planned.reps} reps @ {planned.weight}{' '}
@@ -776,12 +797,62 @@ export const TrackerView: React.FC<TrackerViewProps> = ({ onOpenPlanner }) => {
                   </div>
                 </div>
 
+                {/* Dumbbell Setup Selector (1 Dumbbell vs 2 Dumbbells Same Weight) */}
+                {isDumbbell && (
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 rounded-xl bg-zinc-950/75 border border-white/10 px-3.5 py-2.5">
+                    <div className="flex items-center gap-2 text-xs text-zinc-300">
+                      <Dumbbell className="w-4 h-4 text-[#00FF88] shrink-0" />
+                      <span>
+                        {dbCount === 2
+                          ? 'Select weight for 1 dumbbell — the 2nd dumbbell matches automatically (2× total).'
+                          : 'Using 1 single dumbbell per rep (1× total).'}
+                      </span>
+                    </div>
+                    <div
+                      role="group"
+                      aria-label={`${entry.name} dumbbell setup`}
+                      className="inline-flex rounded-lg bg-zinc-900 border border-white/10 p-0.5 self-start sm:self-auto"
+                    >
+                      <button
+                        type="button"
+                        aria-pressed={dbCount === 1}
+                        onClick={() => setExerciseDumbbellCount(exIdx, 1)}
+                        className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+                          dbCount === 1
+                            ? 'bg-[#00FF88] text-zinc-950 font-semibold'
+                            : 'text-zinc-300 hover:text-white'
+                        }`}
+                      >
+                        1 Dumbbell
+                      </button>
+                      <button
+                        type="button"
+                        aria-pressed={dbCount === 2}
+                        onClick={() => setExerciseDumbbellCount(exIdx, 2)}
+                        className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+                          dbCount === 2
+                            ? 'bg-[#00FF88] text-zinc-950 font-semibold'
+                            : 'text-zinc-300 hover:text-white'
+                        }`}
+                      >
+                        2 Dumbbells (Same Weight)
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {/* Sets Table */}
                 <div className="space-y-2">
                   <div className="grid grid-cols-12 gap-2 text-xs text-zinc-500 font-mono px-2">
                     <div className="col-span-1">SET</div>
-                    <div className="col-span-4">WEIGHT ({profile.weightUnit.toUpperCase()})</div>
-                    <div className="col-span-3">REPS</div>
+                    <div className={isDumbbell && dbCount === 2 ? 'col-span-5' : 'col-span-4'}>
+                      {isDumbbell
+                        ? dbCount === 2
+                          ? `DB 1 + DB 2 (${profile.weightUnit.toUpperCase()})`
+                          : `1 DB (${profile.weightUnit.toUpperCase()})`
+                        : `WEIGHT (${profile.weightUnit.toUpperCase()})`}
+                    </div>
+                    <div className={isDumbbell && dbCount === 2 ? 'col-span-2' : 'col-span-3'}>REPS</div>
                     <div className="col-span-2">RPE</div>
                     <div className="col-span-2 text-right">DONE</div>
                   </div>
@@ -798,20 +869,47 @@ export const TrackerView: React.FC<TrackerViewProps> = ({ onOpenPlanner }) => {
                       <div className="col-span-1 font-mono text-sm font-semibold text-zinc-300 pl-1">
                         {s.setNumber}
                       </div>
-                      <div className="col-span-4">
-                        <input
-                          type="number"
-                          step="0.5"
-                          min={0}
-                          aria-label={`${entry.name} set ${s.setNumber} weight`}
-                          value={s.weight}
-                          onChange={(e) =>
-                            updateSetField(exIdx, setIdx, 'weight', Number(e.target.value))
-                          }
-                          className="w-full rounded-lg bg-zinc-900 border border-white/10 px-2.5 py-1.5 text-sm font-mono text-white focus:outline-none focus:border-[#00FF88]"
-                        />
+                      <div className={isDumbbell && dbCount === 2 ? 'col-span-5' : 'col-span-4'}>
+                        {isDumbbell && dbCount === 2 ? (
+                          <div className="flex flex-col sm:flex-row sm:items-center gap-1.5">
+                            <input
+                              type="number"
+                              step="0.5"
+                              min={0}
+                              list="dumbbell-weight-presets"
+                              aria-label={`${entry.name} set ${s.setNumber} dumbbell weight`}
+                              value={s.weight}
+                              onChange={(e) =>
+                                updateSetField(exIdx, setIdx, 'weight', Number(e.target.value))
+                              }
+                              className="w-full sm:w-24 rounded-lg bg-zinc-900 border border-white/10 px-2.5 py-1.5 text-sm font-mono text-white focus:outline-none focus:border-[#00FF88]"
+                            />
+                            <div
+                              className="inline-flex items-center gap-1 rounded-lg bg-zinc-900/80 border border-white/10 px-2 py-1 text-[11px] font-mono text-zinc-300 whitespace-nowrap"
+                              title="Second dumbbell automatically uses the exact same weight"
+                            >
+                              <span className="text-[#00FF88]">+ {s.weight} {profile.weightUnit}</span>
+                              <span className="text-zinc-500">
+                                ({getEffectiveEntryWeight(s.weight, 2)} total)
+                              </span>
+                            </div>
+                          </div>
+                        ) : (
+                          <input
+                            type="number"
+                            step="0.5"
+                            min={0}
+                            list={isDumbbell ? 'dumbbell-weight-presets' : undefined}
+                            aria-label={`${entry.name} set ${s.setNumber} weight`}
+                            value={s.weight}
+                            onChange={(e) =>
+                              updateSetField(exIdx, setIdx, 'weight', Number(e.target.value))
+                            }
+                            className="w-full rounded-lg bg-zinc-900 border border-white/10 px-2.5 py-1.5 text-sm font-mono text-white focus:outline-none focus:border-[#00FF88]"
+                          />
+                        )}
                       </div>
-                      <div className="col-span-3">
+                      <div className={isDumbbell && dbCount === 2 ? 'col-span-2' : 'col-span-3'}>
                         <input
                           type="number"
                           min={0}
@@ -898,6 +996,15 @@ export const TrackerView: React.FC<TrackerViewProps> = ({ onOpenPlanner }) => {
           </div>
         </div>
       )}
+
+      {/* Standard Dumbbell Rack Presets */}
+      <datalist id="dumbbell-weight-presets">
+        {[2.5, 5, 7.5, 10, 12.5, 15, 17.5, 20, 22.5, 25, 27.5, 30, 32.5, 35, 37.5, 40, 45, 50, 55, 60].map(
+          (w) => (
+            <option key={w} value={w} />
+          )
+        )}
+      </datalist>
 
       {/* Plate Calculator Modal */}
       {plateCalcTarget && (

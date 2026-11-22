@@ -121,6 +121,7 @@ export interface LoggedExercise {
   name: string;
   targetMuscle: MuscleGroup;
   sets: LoggedSet[];
+  dumbbellCount?: 1 | 2;
 }
 
 export interface WorkoutLog {

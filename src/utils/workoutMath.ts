@@ -1,6 +1,7 @@
 import {
   AchievementDef,
   DayPlan,
+  Equipment,
   Exercise,
   GamificationSummary,
   LoggedExercise,
@@ -70,12 +71,35 @@ export function calculateE1RM(weight: number, reps: number): number {
   return Math.round(weight * (1 + reps / 30) * 10) / 10;
 }
 
+export function isDumbbellExercise(exerciseName: string, equipment?: Equipment): boolean {
+  if (equipment === 'Dumbbell') return true;
+  return /\bdumbbell\b|\bdb\b/i.test(exerciseName);
+}
+
+export function getDefaultDumbbellCount(exerciseId: string, exerciseName: string): 1 | 2 {
+  const text = `${exerciseId} ${exerciseName}`.toLowerCase();
+  if (
+    /\b(one-arm|single-arm|single-dumbbell|goblet|concentration|russian-twist|side-bend|pullover|sumo-squat|svend-plate|suitcase|single-leg-dumbbell-calf|overhead-tricep-extension|overhead-extension)\b/.test(
+      text
+    )
+  ) {
+    return 1;
+  }
+  return 2;
+}
+
+export function getEffectiveEntryWeight(weightPerUnit: number, dumbbellCount?: 1 | 2): number {
+  const mult = dumbbellCount === 2 ? 2 : 1;
+  return Math.round(weightPerUnit * mult * 10) / 10;
+}
+
 export function calculateSessionVolumeKg(entries: LoggedExercise[]): number {
   let total = 0;
   for (const entry of entries) {
+    const mult = entry.dumbbellCount === 2 ? 2 : 1;
     for (const set of entry.sets) {
       if (set.completed && set.weight > 0 && set.reps > 0) {
-        total += set.weight * set.reps;
+        total += set.weight * mult * set.reps;
       }
     }
   }
@@ -103,13 +127,14 @@ export function computePersonalRecords(logs: WorkoutLog[]): Record<string, Perso
       let bestE1RM = 0;
 
       for (const s of completedSets) {
-        entryVolume += s.weight * s.reps;
-        if (s.weight > topWeight) topWeight = s.weight;
-        if (s.reps > topReps || (s.reps === topReps && s.weight > topRepsWeight)) {
+        const effWeight = getEffectiveEntryWeight(s.weight, entry.dumbbellCount);
+        entryVolume += effWeight * s.reps;
+        if (effWeight > topWeight) topWeight = effWeight;
+        if (s.reps > topReps || (s.reps === topReps && effWeight > topRepsWeight)) {
           topReps = s.reps;
-          topRepsWeight = s.weight;
+          topRepsWeight = effWeight;
         }
-        const e1rm = calculateE1RM(s.weight, s.reps);
+        const e1rm = calculateE1RM(effWeight, s.reps);
         if (e1rm > bestE1RM) bestE1RM = e1rm;
       }
 
@@ -154,20 +179,32 @@ export function detectNewPRs(
     const completed = entry.sets.filter((s) => s.completed && s.reps > 0);
     if (completed.length === 0) continue;
 
-    const topWeight = Math.max(...completed.map((s) => s.weight));
-    const bestE1RM = Math.max(...completed.map((s) => calculateE1RM(s.weight, s.reps)));
-    const totalVol = completed.reduce((acc, s) => acc + s.weight * s.reps, 0);
+    const topPerUnit = Math.max(...completed.map((s) => s.weight));
+    const topWeight = Math.max(
+      ...completed.map((s) => getEffectiveEntryWeight(s.weight, entry.dumbbellCount))
+    );
+    const bestE1RM = Math.max(
+      ...completed.map((s) =>
+        calculateE1RM(getEffectiveEntryWeight(s.weight, entry.dumbbellCount), s.reps)
+      )
+    );
+    const totalVol = completed.reduce(
+      (acc, s) => acc + getEffectiveEntryWeight(s.weight, entry.dumbbellCount) * s.reps,
+      0
+    );
+    const weightLabel =
+      entry.dumbbellCount === 2 ? `${topPerUnit}kg×2 = ${topWeight}kg` : `${topWeight}kg`;
 
     const prev = prevRecords[entry.exerciseId];
     if (!prev) {
       if (topWeight > 0) {
-        prs.push(`${entry.name}: First logged benchmark (${topWeight}kg)`);
+        prs.push(`${entry.name}: First logged benchmark (${weightLabel})`);
       }
       continue;
     }
 
     if (topWeight > prev.maxWeight) {
-      prs.push(`${entry.name}: New Weight PR (${topWeight}kg)`);
+      prs.push(`${entry.name}: New Weight PR (${weightLabel})`);
     } else if (bestE1RM > prev.bestE1RM) {
       prs.push(`${entry.name}: New E1RM PR (${bestE1RM}kg)`);
     } else if (totalVol > prev.maxVolume && totalVol > 0) {
@@ -242,7 +279,10 @@ export function computeProgressiveOverload(
       ? `Last session was ${workingWeight}kg — target today is ${planned.weight}kg.`
       : `Match ${planned.sets}x${planned.reps} at ${workingWeight}kg before adding weight.`,
     trendPercent,
-    previousBestText: `${latestTopSet.weight}kg x ${latestTopSet.reps} reps`,
+    previousBestText:
+      latest.entry.dumbbellCount === 2
+        ? `${latestTopSet.weight}kg×2 x ${latestTopSet.reps} reps`
+        : `${latestTopSet.weight}kg x ${latestTopSet.reps} reps`,
     lastWorkoutDate: latest.date,
   };
 }
