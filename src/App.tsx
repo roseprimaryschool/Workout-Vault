@@ -109,7 +109,9 @@ const VaultShell: React.FC = () => {
           />
         )}
         {activeTab === 'library' && <LibraryView />}
-        {activeTab === 'tracker' && <TrackerView />}
+        {activeTab === 'tracker' && (
+          <TrackerView onOpenPlanner={() => setActiveTab('planner')} />
+        )}
         {activeTab === 'analytics' && <AnalyticsView />}
         {activeTab === 'coach' && (
           <CoachView onOpenPlanner={() => setActiveTab('planner')} />

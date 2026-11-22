@@ -8,7 +8,12 @@ import {
   computeMuscleRecovery,
   computePersonalRecords,
   computeProgressiveOverload,
+  computeTrainingSymmetry,
+  computeWeeklyVolumeLandmarks,
   detectNewPRs,
+  getLocalDateISO,
+  getTodaysWorkoutLog,
+  hasLoggedWorkoutOnDate,
 } from './workoutMath';
 import { DEFAULT_WEEKLY_PLANS, EXERCISE_LIBRARY } from '../data/exercises';
 import { generateWeeklySplit } from './generator';
@@ -200,8 +205,8 @@ test('EXERCISE_LIBRARY covers all 12 muscle groups deeply with verified non-404 
 
   const ids = new Set<string>();
   const names = new Set<string>();
-  const verifiedMwUrlPattern =
-    /^https:\/\/musclewiki\.com\/exercises\/(chest|lats|traps-middle|traps|lowerback|shoulders|quads|hamstrings|glutes|calves|biceps|triceps|forearms|abdominals|lower-abdominals|obliques|cardio)(\/(barbell|dumbbells|cables|machine|bodyweight|kettlebells))?$/;
+  const slugs = new Set<string>();
+  const verifiedMwUrlPattern = /^https:\/\/musclewiki\.com\/exercise\/[a-z0-9-]+$/;
 
   for (const ex of EXERCISE_LIBRARY) {
     assert.equal(ids.has(ex.id), false, `Duplicate exercise id: ${ex.id}`);
@@ -209,10 +214,12 @@ test('EXERCISE_LIBRARY covers all 12 muscle groups deeply with verified non-404 
     const normName = ex.name.toLowerCase();
     assert.equal(names.has(normName), false, `Duplicate exercise name: ${ex.name}`);
     names.add(normName);
+    assert.equal(slugs.has(ex.muscleWikiSlug), false, `Duplicate MuscleWiki slug: ${ex.muscleWikiSlug}`);
+    slugs.add(ex.muscleWikiSlug);
     assert.match(
       ex.muscleWikiUrl,
       verifiedMwUrlPattern,
-      `Invalid or unverified MuscleWiki URL for ${ex.id}: ${ex.muscleWikiUrl}`
+      `Invalid MuscleWiki exercise URL for ${ex.id}: ${ex.muscleWikiUrl}`
     );
     assert.ok(ex.instructions.length >= 3, `Expected >= 3 instructions for ${ex.id}`);
   }
@@ -225,9 +232,165 @@ test('EXERCISE_LIBRARY covers all 12 muscle groups deeply with verified non-404 
   const hangingLegRaise = EXERCISE_LIBRARY.find((ex) => ex.id === 'hanging-leg-raise');
   assert.equal(
     hangingLegRaise?.muscleWikiUrl,
-    'https://musclewiki.com/exercises/lower-abdominals/bodyweight'
+    'https://musclewiki.com/exercise/hanging-knee-raises'
+  );
+
+  // Verify every preset workout split only references valid library exercise IDs
+  const styles = [
+    'Push Pull Legs',
+    'Upper Lower',
+    'Full Body',
+    'Powerbuilding',
+    'Strength',
+    'Hypertrophy',
+    'Home Workouts',
+  ] as const;
+  for (const style of styles) {
+    const split = generateWeeklySplit(style);
+    for (const dayPlan of Object.values(split)) {
+      for (const item of dayPlan.exercises) {
+        assert.ok(ids.has(item.exerciseId), `Missing exerciseId ${item.exerciseId} in ${style}`);
+      }
+    }
+  }
+});
+
+test('getLocalDateISO and 1-workout-per-day date checks enforce daily uniqueness', () => {
+  const local = getLocalDateISO(new Date(2026, 10, 18, 23, 55, 0));
+  assert.equal(local, '2026-11-18');
+  assert.equal(hasLoggedWorkoutOnDate(sampleLogs, '2026-11-18'), true);
+  assert.equal(hasLoggedWorkoutOnDate(sampleLogs, '2026-11-19'), false);
+  assert.equal(getTodaysWorkoutLog(sampleLogs, '2026-11-18')?.id, 'log-a');
+  assert.equal(getTodaysWorkoutLog(sampleLogs, '2026-11-19'), undefined);
+});
+
+test('scientific computeMuscleRecovery models synergist fatigue, muscle-specific SRA rates, RPE load, and smooth decay', () => {
+  // 1) Synergist fatigue propagation from Bench Press (Chest primary -> Shoulders & Triceps secondary)
+  const t6h = new Date('2026-11-18T18:00:00Z').getTime();
+  const rec6h = computeMuscleRecovery(sampleLogs, t6h);
+  const chest6h = rec6h.muscles.find((m) => m.muscle === 'Chest')!;
+  const triceps6h = rec6h.muscles.find((m) => m.muscle === 'Triceps')!;
+  assert.equal(chest6h.directSets, 3);
+  assert.equal(triceps6h.indirectSets, 3);
+  assert.equal(triceps6h.recentSets, 1.5);
+  assert.ok(
+    triceps6h.recoveryPercent < 100 && triceps6h.recoveryPercent > chest6h.recoveryPercent,
+    'Synergist Triceps should have mild fatigue but recover higher than primary Chest'
+  );
+  assert.ok((chest6h.hoursToReady ?? 0) > 0);
+
+  // 2) Smooth monotonic decay across 47h -> 49h (no 48h step discontinuity)
+  const t47 = new Date('2026-11-20T11:00:00Z').getTime();
+  const t49 = new Date('2026-11-20T13:00:00Z').getTime();
+  const chest47 = computeMuscleRecovery(sampleLogs, t47).muscles.find((m) => m.muscle === 'Chest')!;
+  const chest49 = computeMuscleRecovery(sampleLogs, t49).muscles.find((m) => m.muscle === 'Chest')!;
+  assert.ok(
+    chest49.recoveryPercent >= chest47.recoveryPercent &&
+      chest49.recoveryPercent - chest47.recoveryPercent <= 5
+  );
+
+  // 3) Muscle size SRA speed & RPE dose-response comparison
+  const rpeLogs: WorkoutLog[] = [
+    {
+      id: 'log-rpe',
+      date: '2026-11-18',
+      day: 'wednesday',
+      category: 'Full Body',
+      title: 'SRA Test',
+      durationSeconds: 2400,
+      totalVolumeKg: 1500,
+      xpEarned: 150,
+      musclesTrained: ['Quads', 'Biceps'],
+      prsHit: [],
+      entries: [
+        {
+          exerciseId: 'barbell-back-squat',
+          name: 'Barbell Back Squat',
+          targetMuscle: 'Quads',
+          sets: [
+            { setNumber: 1, weight: 120, reps: 5, completed: true, rpe: 10 },
+            { setNumber: 2, weight: 120, reps: 5, completed: true, rpe: 10 },
+            { setNumber: 3, weight: 120, reps: 5, completed: true, rpe: 10 },
+            { setNumber: 4, weight: 120, reps: 5, completed: true, rpe: 9.5 },
+          ],
+        },
+        {
+          exerciseId: 'barbell-bicep-curl',
+          name: 'Barbell Bicep Curl',
+          targetMuscle: 'Biceps',
+          sets: [
+            { setNumber: 1, weight: 30, reps: 10, completed: true, rpe: 6.5 },
+            { setNumber: 2, weight: 30, reps: 10, completed: true, rpe: 6.5 },
+            { setNumber: 3, weight: 30, reps: 10, completed: true, rpe: 6.5 },
+            { setNumber: 4, weight: 30, reps: 10, completed: true, rpe: 6.5 },
+          ],
+        },
+      ],
+    },
+  ];
+  const t30h = new Date('2026-11-19T18:00:00Z').getTime();
+  const rpeRec = computeMuscleRecovery(rpeLogs, t30h);
+  const quads30 = rpeRec.muscles.find((m) => m.muscle === 'Quads')!;
+  const biceps30 = rpeRec.muscles.find((m) => m.muscle === 'Biceps')!;
+  assert.ok(
+    biceps30.recoveryPercent > quads30.recoveryPercent + 15,
+    `Expected submaximal Biceps (${biceps30.recoveryPercent}%) to recover significantly faster than high-RPE Quads (${quads30.recoveryPercent}%)`
   );
 });
 
+test('computeWeeklyVolumeLandmarks and computeTrainingSymmetry score effective sets and balance accurately', () => {
+  const landmarks = computeWeeklyVolumeLandmarks(sampleLogs, '2026-11-20');
+  const chest = landmarks.find((l) => l.muscle === 'Chest')!;
+  const triceps = landmarks.find((l) => l.muscle === 'Triceps')!;
+  assert.equal(chest.directSets, 3);
+  assert.equal(chest.weeklyEffectiveSets, 3);
+  assert.equal(chest.zone, 'Under MV');
+  assert.equal(triceps.indirectSets, 3);
+  assert.equal(triceps.weeklyEffectiveSets, 1.5);
 
+  const symmetry = computeTrainingSymmetry(sampleLogs);
+  assert.equal(symmetry.pushSets, 3);
+  assert.equal(symmetry.pullSets, 0);
+  assert.equal(symmetry.pushPullRatio, null);
+  assert.equal(symmetry.insights[0].status, 'warning');
+});
 
+test('EXERCISE_LIBRARY includes all 21 user-requested dumbbell/core/carry exercises with valid MuscleWiki links', () => {
+  const requiredNames = [
+    'Dumbbell Bench Press',
+    'Incline Dumbbell Bench Press',
+    'Seated Dumbbell Shoulder Press',
+    'Dumbbell Lateral Raise',
+    'Overhead Dumbbell Tricep Extension',
+    'Neutral-Grip Dumbbell Skullcrusher',
+    'One-Arm Dumbbell Row',
+    'Chest-Supported Dumbbell Row',
+    'Dumbbell Shrug',
+    'Rear Delt Raises',
+    'Seated Dumbbell Rear Delt Raise',
+    'Dumbbell Curl',
+    'Dumbbell Hammer Curl',
+    'Dumbbell Reverse Curl',
+    'Dumbbell Goblet Squat',
+    'Bulgarian Split Squat',
+    'Dumbbell Romanian Deadlift',
+    'Standing Machine Calf Raise',
+    'Seated Dumbbell Calf Raises',
+    'RKC Plank',
+    'Hanging Knee / Leg Raise',
+    'Seated Incline Leg Raises',
+    "Farmer's Carries (Dumbbell)",
+    'Static Hold / Single-Arm Farmer Carry',
+  ];
+
+  const byName = new Map(EXERCISE_LIBRARY.map((ex) => [ex.name, ex]));
+  for (const name of requiredNames) {
+    const found = byName.get(name);
+    assert.ok(found, `Expected exercise "${name}" in EXERCISE_LIBRARY`);
+    assert.match(
+      found.muscleWikiUrl,
+      /^https:\/\/musclewiki\.com\/exercise\/[a-z0-9-]+$/,
+      `Invalid MuscleWiki URL for "${name}": ${found.muscleWikiUrl}`
+    );
+  }
+});

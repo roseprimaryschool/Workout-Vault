@@ -1,15 +1,20 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Activity,
   Award,
   Calculator,
+  CalendarDays,
   Check,
   Clock,
   Copy,
   ExternalLink,
+  History,
+  Lock,
   Play,
-  Plus,
+  RotateCcw,
   SkipForward,
   Timer,
+  Trash2,
   TrendingUp,
   Trophy,
   Volume2,
@@ -27,8 +32,12 @@ import {
 } from '../types/workout';
 import {
   calculateSessionVolumeKg,
+  computeMuscleRecovery,
+  computePersonalRecords,
   computeProgressiveOverload,
   detectNewPRs,
+  getLocalDateISO,
+  getTodaysWorkoutLog,
 } from '../utils/workoutMath';
 import { PlateCalculatorModal } from './PlateCalculatorModal';
 
@@ -64,15 +73,21 @@ function playRestCompleteChime() {
   }
 }
 
-export const TrackerView: React.FC = () => {
+interface TrackerViewProps {
+  onOpenPlanner?: () => void;
+}
+
+export const TrackerView: React.FC<TrackerViewProps> = ({ onOpenPlanner }) => {
   const {
     plans,
     logs,
     allExercises,
+    customExercises,
     profile,
     activeTrackerDay,
     setActiveTrackerDay,
     saveWorkoutLog,
+    resetTodaysWorkout,
   } = useVault();
 
   const todayWeekday = useMemo<Weekday>(() => {
@@ -80,17 +95,31 @@ export const TrackerView: React.FC = () => {
     return WEEKDAYS[idx];
   }, []);
 
+  const todayISO = getLocalDateISO();
+  const todaysLog = useMemo(
+    () => getTodaysWorkoutLog(logs, todayISO),
+    [logs, todayISO]
+  );
+
+  const recoveryByMuscle = useMemo(() => {
+    const rec = computeMuscleRecovery(logs, Date.now(), customExercises);
+    return new Map(rec.muscles.map((m) => [m.muscle, m]));
+  }, [logs, customExercises]);
+
+  const personalRecords = useMemo(() => computePersonalRecords(logs), [logs]);
+
   const [selectedDay, setSelectedDay] = useState<Weekday>(activeTrackerDay || todayWeekday);
   const [entries, setEntries] = useState<LoggedExercise[]>([]);
   const [sessionActive, setSessionActive] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [restRemaining, setRestRemaining] = useState(0);
   const [chimeEnabled, setChimeEnabled] = useState(true);
-  const [showAddPicker, setShowAddPicker] = useState(false);
-  const [pickerSearch, setPickerSearch] = useState('');
-  const [pickerMuscle, setPickerMuscle] = useState<'All' | MuscleGroup>('All');
   const [completedSummary, setCompletedSummary] = useState<WorkoutLog | null>(null);
   const [copiedRecap, setCopiedRecap] = useState(false);
+  const [confirmResetSession, setConfirmResetSession] = useState(false);
+  const [confirmResetTodayLog, setConfirmResetTodayLog] = useState(false);
+  const [isResettingToday, setIsResettingToday] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [plateCalcTarget, setPlateCalcTarget] = useState<{
     exIdx: number;
     name: string;
@@ -100,18 +129,9 @@ export const TrackerView: React.FC = () => {
 
   const prevRestRef = useRef(0);
 
-  // Sync if launched from Planner "Start" button
-  useEffect(() => {
-    if (activeTrackerDay) {
-      setSelectedDay(activeTrackerDay);
-      loadDayIntoTracker(activeTrackerDay);
-      setActiveTrackerDay(null);
-    }
-  }, [activeTrackerDay]);
-
-  const loadDayIntoTracker = (day: Weekday) => {
+  const buildEntriesFromPlan = (day: Weekday): LoggedExercise[] => {
     const plan = plans[day];
-    const mapped: LoggedExercise[] = plan.exercises.map((ex) => ({
+    return plan.exercises.map((ex) => ({
       exerciseId: ex.exerciseId,
       name: ex.name,
       targetMuscle: ex.targetMuscle,
@@ -122,35 +142,34 @@ export const TrackerView: React.FC = () => {
         completed: false,
       })),
     }));
-    setEntries(mapped);
-    setElapsedSeconds(0);
-    setRestRemaining(0);
-    setSessionActive(true);
-    setCompletedSummary(null);
-    setCopiedRecap(false);
   };
 
-  // Initialize default day entries on first load if idle
+  // Sync if launched from Planner "Start" button
   useEffect(() => {
-    if (!sessionActive && entries.length === 0 && !completedSummary) {
-      const plan = plans[selectedDay];
-      if (plan.exercises.length > 0) {
-        setEntries(
-          plan.exercises.map((ex) => ({
-            exerciseId: ex.exerciseId,
-            name: ex.name,
-            targetMuscle: ex.targetMuscle,
-            sets: Array.from({ length: ex.sets }, (_, i) => ({
-              setNumber: i + 1,
-              weight: ex.weight,
-              reps: ex.reps,
-              completed: false,
-            })),
-          }))
-        );
-      }
+    if (activeTrackerDay) {
+      setSelectedDay(activeTrackerDay);
+      loadDayIntoTracker(activeTrackerDay, true);
+      setActiveTrackerDay(null);
     }
-  }, [selectedDay]);
+  }, [activeTrackerDay]);
+
+  const loadDayIntoTracker = (day: Weekday, autoStart: boolean = true) => {
+    setEntries(buildEntriesFromPlan(day));
+    setElapsedSeconds(0);
+    setRestRemaining(0);
+    setSessionActive(autoStart);
+    setCompletedSummary(null);
+    setCopiedRecap(false);
+    setConfirmResetSession(false);
+    setSaveError(null);
+  };
+
+  // Keep Tracker synchronized with Planner whenever no active session is running
+  useEffect(() => {
+    if (!sessionActive && !completedSummary) {
+      setEntries(buildEntriesFromPlan(selectedDay));
+    }
+  }, [selectedDay, plans, sessionActive, completedSummary]);
 
   // Session stopwatch & rest countdown
   useEffect(() => {
@@ -247,28 +266,46 @@ export const TrackerView: React.FC = () => {
     );
   };
 
-  const addSetToExercise = (exIdx: number) => {
+  const matchLastSessionForExercise = (exIdx: number, exerciseId: string) => {
+    const sorted = [...logs].sort((a, b) => b.date.localeCompare(a.date));
+    let lastEntry: LoggedExercise | undefined;
+    for (const log of sorted) {
+      const found = log.entries.find(
+        (e) => e.exerciseId === exerciseId && e.sets.some((s) => s.completed)
+      );
+      if (found) {
+        lastEntry = found;
+        break;
+      }
+    }
+    if (!lastEntry) return;
+    const doneSets = lastEntry.sets.filter((s) => s.completed);
+    if (doneSets.length === 0) return;
+
     setEntries((prev) =>
       prev.map((ex, i) => {
         if (i !== exIdx) return ex;
-        const last = ex.sets[ex.sets.length - 1] || { weight: 20, reps: 10 };
         return {
           ...ex,
-          sets: [
-            ...ex.sets,
-            {
-              setNumber: ex.sets.length + 1,
-              weight: last.weight,
-              reps: last.reps,
-              completed: false,
-            },
-          ],
+          sets: ex.sets.map((s, idx) => {
+            if (s.completed) return s;
+            const ref = doneSets[Math.min(idx, doneSets.length - 1)];
+            return { ...s, weight: ref.weight, reps: ref.reps };
+          }),
         };
       })
     );
   };
 
   const handleFinishWorkout = async () => {
+    setSaveError(null);
+    if (todaysLog) {
+      setSaveError(
+        `You already logged a workout today (${todayISO}). Reset today's workout above if you want to re-log.`
+      );
+      return;
+    }
+
     const volume = calculateSessionVolumeKg(entries);
     const completedExercises = entries.filter((e) => e.sets.some((s) => s.completed));
     if (completedExercises.length === 0) return;
@@ -285,7 +322,7 @@ export const TrackerView: React.FC = () => {
 
     const log: WorkoutLog = {
       id: `log-${Date.now().toString(36)}`,
-      date: new Date().toISOString().slice(0, 10),
+      date: todayISO,
       day: selectedDay,
       category: plans[selectedDay].category,
       title: plans[selectedDay].title || `${WEEKDAY_LABELS[selectedDay]} Session`,
@@ -295,12 +332,36 @@ export const TrackerView: React.FC = () => {
       musclesTrained: muscles,
       entries: completedExercises,
       prsHit,
+      createdAt: new Date().toISOString(),
     };
 
-    await saveWorkoutLog(log);
-    setSessionActive(false);
-    setRestRemaining(0);
-    setCompletedSummary(log);
+    try {
+      await saveWorkoutLog(log);
+      setSessionActive(false);
+      setRestRemaining(0);
+      setCompletedSummary(log);
+    } catch (err) {
+      setSaveError(
+        err instanceof Error ? err.message : 'Could not save workout. Please try again.'
+      );
+    }
+  };
+
+  const handleResetTodaysSavedWorkout = async () => {
+    setIsResettingToday(true);
+    setSaveError(null);
+    try {
+      await resetTodaysWorkout(todayISO);
+      setConfirmResetTodayLog(false);
+      setCompletedSummary(null);
+      loadDayIntoTracker(selectedDay, false);
+    } catch (err) {
+      setSaveError(
+        err instanceof Error ? err.message : 'Unable to reset today’s workout.'
+      );
+    } finally {
+      setIsResettingToday(false);
+    }
   };
 
   const handleCopyRecap = async (log: WorkoutLog) => {
@@ -340,7 +401,7 @@ export const TrackerView: React.FC = () => {
             Workout Tracker
           </h1>
           <p className="text-sm text-zinc-400 mt-1">
-            Log sets, weights, reps, and RPE with Progressive Overload cues, plate loading, and PR detection.
+            Follows your Weekly Planner lineup, set count, and targets — edit exercises or set prescriptions in the Planner.
           </p>
         </div>
 
@@ -351,7 +412,7 @@ export const TrackerView: React.FC = () => {
             onChange={(e) => {
               const d = e.target.value as Weekday;
               setSelectedDay(d);
-              loadDayIntoTracker(d);
+              loadDayIntoTracker(d, false);
             }}
             className="rounded-xl bg-zinc-900 border border-white/10 px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-[#00FF88]"
           >
@@ -364,12 +425,47 @@ export const TrackerView: React.FC = () => {
 
           <button
             type="button"
-            onClick={() => loadDayIntoTracker(selectedDay)}
+            onClick={() => loadDayIntoTracker(selectedDay, true)}
             className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-900 border border-white/10 text-sm font-medium text-white hover:border-[#00FF88]/50"
           >
             <Play className="w-4 h-4 text-[#00FF88]" />
-            Start Fresh Session
+            Start Timer
           </button>
+
+          {!confirmResetSession ? (
+            <button
+              type="button"
+              onClick={() => {
+                if (completedSetCount > 0 || elapsedSeconds > 10) {
+                  setConfirmResetSession(true);
+                } else {
+                  loadDayIntoTracker(selectedDay, false);
+                }
+              }}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-900 border border-white/10 text-sm font-medium text-zinc-200 hover:border-amber-400/50 hover:text-amber-300"
+            >
+              <RotateCcw className="w-4 h-4" />
+              Reset Session
+            </button>
+          ) : (
+            <div className="inline-flex items-center gap-2 rounded-xl bg-amber-500/10 border border-amber-500/35 px-3 py-1.5">
+              <span className="text-xs text-amber-200">Clear sets &amp; timer?</span>
+              <button
+                type="button"
+                onClick={() => loadDayIntoTracker(selectedDay, false)}
+                className="px-2.5 py-1 rounded-lg bg-amber-400 text-zinc-950 text-xs font-semibold"
+              >
+                Confirm Reset
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmResetSession(false)}
+                className="px-2 py-1 rounded-lg text-xs text-zinc-300 hover:text-white"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -436,49 +532,96 @@ export const TrackerView: React.FC = () => {
         </div>
       </div>
 
-      {/* Post-Workout Summary Banner */}
-      {completedSummary && (
-        <div className="rounded-2xl bg-[#00FF88]/10 border border-[#00FF88]/40 p-6 space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <Trophy className="w-7 h-7 text-[#00FF88]" />
+      {/* Inline Save / Validation Error */}
+      {saveError && (
+        <div
+          role="alert"
+          className="rounded-2xl bg-rose-500/10 border border-rose-500/35 px-4 py-3 text-xs text-rose-200 flex items-center justify-between gap-3"
+        >
+          <span>{saveError}</span>
+          <button
+            type="button"
+            onClick={() => setSaveError(null)}
+            className="text-rose-300 hover:text-white"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Daily Limit & Reset Today's Logged Workout Banner */}
+      {todaysLog && (
+        <div className="rounded-2xl bg-[#00FF88]/10 border border-[#00FF88]/40 p-5 space-y-4">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+            <div className="flex items-start gap-3">
+              <Trophy className="w-7 h-7 text-[#00FF88] shrink-0 mt-0.5" />
               <div>
-                <h2 className="text-lg font-bold text-white">
-                  Workout Saved — {completedSummary.title}
-                </h2>
-                <p className="text-xs text-zinc-300 font-mono">
-                  Volume: {completedSummary.totalVolumeKg.toLocaleString()} {profile.weightUnit} · +
-                  {completedSummary.xpEarned} XP Earned
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-lg font-bold text-white">
+                    Today&apos;s Workout Complete — {todaysLog.title}
+                  </h2>
+                  <span className="px-2 py-0.5 rounded-md bg-zinc-950/80 border border-[#00FF88]/30 text-[11px] font-mono text-[#00FF88]">
+                    Daily Limit: 1 / 1 Logged
+                  </span>
+                </div>
+                <p className="text-xs text-zinc-300 font-mono mt-1">
+                  {todayISO} · Duration {formatTimer(todaysLog.durationSeconds)} · Volume{' '}
+                  {todaysLog.totalVolumeKg.toLocaleString()} {profile.weightUnit} · +
+                  {todaysLog.xpEarned} XP
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-2 self-start">
+
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                onClick={() => void handleCopyRecap(completedSummary)}
+                onClick={() => void handleCopyRecap(todaysLog)}
                 className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-zinc-950 text-xs font-medium text-[#00FF88] border border-[#00FF88]/30 hover:border-[#00FF88]"
               >
                 <Copy className="w-3.5 h-3.5" />
                 {copiedRecap ? 'Copied Recap!' : 'Copy Recap'}
               </button>
-              <button
-                type="button"
-                onClick={() => setCompletedSummary(null)}
-                className="px-3.5 py-2 rounded-xl bg-zinc-900 text-xs font-medium text-white border border-white/10"
-              >
-                Dismiss
-              </button>
+
+              {!confirmResetTodayLog ? (
+                <button
+                  type="button"
+                  onClick={() => setConfirmResetTodayLog(true)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-500/15 border border-rose-500/35 text-xs font-semibold text-rose-200 hover:bg-rose-500/25"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Reset Today&apos;s Workout
+                </button>
+              ) : (
+                <div className="inline-flex items-center gap-2 rounded-xl bg-rose-500/15 border border-rose-500/40 px-3 py-1.5">
+                  <span className="text-xs text-rose-100">Delete today&apos;s log &amp; re-log?</span>
+                  <button
+                    type="button"
+                    disabled={isResettingToday}
+                    onClick={() => void handleResetTodaysSavedWorkout()}
+                    className="px-2.5 py-1 rounded-lg bg-rose-500 text-white text-xs font-semibold disabled:opacity-50"
+                  >
+                    {isResettingToday ? 'Resetting...' : 'Yes, Reset'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmResetTodayLog(false)}
+                    className="px-2 py-1 rounded-lg text-xs text-zinc-300 hover:text-white"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
             </div>
           </div>
 
-          {completedSummary.prsHit.length > 0 && (
-            <div className="space-y-1">
+          {todaysLog.prsHit.length > 0 && (
+            <div className="space-y-1 pt-2 border-t border-[#00FF88]/20">
               <div className="text-xs font-semibold text-[#A855F7] flex items-center gap-1.5">
                 <Award className="w-4 h-4" />
-                New Personal Records Detected
+                Personal Records Logged Today
               </div>
               <ul className="text-sm text-white space-y-1">
-                {completedSummary.prsHit.map((pr, idx) => (
+                {todaysLog.prsHit.map((pr, idx) => (
                   <li key={idx} className="font-mono text-xs">
                     · {pr}
                   </li>
@@ -489,32 +632,48 @@ export const TrackerView: React.FC = () => {
         </div>
       )}
 
-      {/* Exercise Logging Cards */}
+      {/* Exercise Logging Cards (Strictly driven by Planner) */}
       {entries.length === 0 ? (
         <div className="rounded-2xl bg-zinc-900/50 border border-white/10 p-10 text-center space-y-4">
           <p className="text-sm text-zinc-300">
-            {WEEKDAY_LABELS[selectedDay]} is currently empty with no planned exercises.
+            {WEEKDAY_LABELS[selectedDay]} ({plans[selectedDay].category}) has no exercises scheduled in your Weekly Planner.
           </p>
-          <button
-            type="button"
-            onClick={() => setShowAddPicker(true)}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#00FF88] text-zinc-950 text-sm font-semibold"
-          >
-            <Plus className="w-4 h-4" />
-            Add Exercise to Session
-          </button>
+          <p className="text-xs text-zinc-500">
+            Exercises, set counts, reps, and starting weights are managed in the Planner so your tracker always matches your split.
+          </p>
+          {onOpenPlanner && (
+            <button
+              type="button"
+              onClick={onOpenPlanner}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#00FF88] text-zinc-950 text-sm font-semibold hover:bg-[#00FF88]/90"
+            >
+              <CalendarDays className="w-4 h-4" />
+              Edit in Weekly Planner
+            </button>
+          )}
         </div>
       ) : (
         <div className="space-y-4">
           {entries.map((entry, exIdx) => {
-            const planned = plans[selectedDay].exercises.find(
-              (p) => p.exerciseId === entry.exerciseId
-            ) || {
+            const plannedItem = plans[selectedDay].exercises[exIdx] ||
+              plans[selectedDay].exercises.find((p) => p.exerciseId === entry.exerciseId);
+            const planned = plannedItem || {
               sets: entry.sets.length,
               reps: entry.sets[0]?.reps || 10,
               weight: entry.sets[0]?.weight || 0,
+              restSeconds: 90,
+              tempo: '2-0-1-0',
+              notes: '',
             };
             const overload = computeProgressiveOverload(entry.exerciseId, planned, logs);
+            const muscleReadiness = recoveryByMuscle.get(entry.targetMuscle);
+            const exPr = personalRecords[entry.exerciseId];
+            const readinessTone =
+              muscleReadiness?.status === 'Red'
+                ? 'text-rose-400 bg-rose-500/10 border-rose-500/25'
+                : muscleReadiness?.status === 'Yellow'
+                ? 'text-amber-300 bg-amber-500/10 border-amber-500/25'
+                : 'text-[#00FF88] bg-[#00FF88]/10 border-[#00FF88]/25';
 
             return (
               <section
@@ -523,10 +682,24 @@ export const TrackerView: React.FC = () => {
               >
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-white/10">
                   <div>
-                    <div className="text-xs text-zinc-400">
-                      {entry.targetMuscle} · Previous: {overload.previousBestText}
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+                      <span>{entry.targetMuscle} · Previous: {overload.previousBestText}</span>
+                      {muscleReadiness && (
+                        <span
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md border font-mono text-[11px] ${readinessTone}`}
+                        >
+                          <Activity className="w-3 h-3" />
+                          {muscleReadiness.recoveryPercent}% {muscleReadiness.status === 'Green' ? 'Ready' : muscleReadiness.status === 'Yellow' ? 'Recovering' : 'Fatigued'}
+                        </span>
+                      )}
+                      {exPr && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-zinc-950 border border-white/10 font-mono text-[11px] text-zinc-300">
+                          <Trophy className="w-3 h-3 text-[#A855F7]" />
+                          PR {exPr.maxWeight} {profile.weightUnit} (E1RM {exPr.bestE1RM})
+                        </span>
+                      )}
                     </div>
-                    <div className="flex items-center gap-3 mt-0.5">
+                    <div className="flex flex-wrap items-center gap-3 mt-1">
                       <h2 className="text-lg font-semibold text-white">{entry.name}</h2>
                       {(() => {
                         const libEx = allExercises.find((e) => e.id === entry.exerciseId);
@@ -544,10 +717,27 @@ export const TrackerView: React.FC = () => {
                         );
                       })()}
                     </div>
+                    <div className="text-[11px] font-mono text-zinc-400 mt-1">
+                      Planner Target: {planned.sets} sets × {planned.reps} reps @ {planned.weight}{' '}
+                      {profile.weightUnit} · Rest {planned.restSeconds}s · Tempo {planned.tempo}
+                      {planned.notes ? ` · ${planned.notes}` : ''}
+                    </div>
                   </div>
 
-                  {/* Progressive Overload Assistant & Plate Loader */}
+                  {/* Progressive Overload Assistant, Match Last Session & Plate Loader */}
                   <div className="flex flex-wrap items-center gap-2">
+                    {overload.lastWorkoutDate && (
+                      <button
+                        type="button"
+                        onClick={() => matchLastSessionForExercise(exIdx, entry.exerciseId)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-950 border border-white/10 text-xs font-medium text-zinc-200 hover:border-[#00FF88]/50 hover:text-[#00FF88]"
+                        title="Auto-fill uncompleted sets with your last logged weights and reps"
+                      >
+                        <History className="w-3.5 h-3.5" />
+                        Match Last Session
+                      </button>
+                    )}
+
                     <button
                       type="button"
                       onClick={() =>
@@ -666,38 +856,44 @@ export const TrackerView: React.FC = () => {
                     </div>
                   ))}
                 </div>
-
-                <button
-                  type="button"
-                  onClick={() => addSetToExercise(exIdx)}
-                  className="inline-flex items-center gap-1.5 text-xs font-medium text-zinc-400 hover:text-[#00FF88] transition-colors"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  Add Set
-                </button>
               </section>
             );
           })}
 
           {/* Action Bar */}
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2">
-            <button
-              type="button"
-              onClick={() => setShowAddPicker(true)}
-              className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-zinc-900 border border-white/10 text-sm font-medium text-zinc-200 hover:border-white/25"
-            >
-              <Plus className="w-4 h-4" />
-              Add Exercise to Session
-            </button>
+            {onOpenPlanner ? (
+              <button
+                type="button"
+                onClick={onOpenPlanner}
+                className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-zinc-900 border border-white/10 text-sm font-medium text-zinc-200 hover:border-[#00FF88]/40 hover:text-white"
+              >
+                <CalendarDays className="w-4 h-4 text-[#00FF88]" />
+                Change Exercises / Targets in Planner
+              </button>
+            ) : (
+              <div className="text-xs text-zinc-500">
+                Change exercises, sets, or targets in the Weekly Planner.
+              </div>
+            )}
 
             <button
               type="button"
-              disabled={completedSetCount === 0}
+              disabled={completedSetCount === 0 || Boolean(todaysLog)}
               onClick={() => void handleFinishWorkout()}
               className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-[#00FF88] text-zinc-950 text-sm font-bold hover:bg-[#00FF88]/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
-              <Check className="w-4 h-4" />
-              Finish &amp; Save Workout ({completedSetCount} sets)
+              {todaysLog ? (
+                <>
+                  <Lock className="w-4 h-4" />
+                  1 Workout / Day Logged — Reset Above to Re-log
+                </>
+              ) : (
+                <>
+                  <Check className="w-4 h-4" />
+                  Finish &amp; Save Workout ({completedSetCount} sets)
+                </>
+              )}
             </button>
           </div>
         </div>
@@ -713,192 +909,6 @@ export const TrackerView: React.FC = () => {
           onClose={() => setPlateCalcTarget(null)}
           onApplyWeight={(w) => applySuggestedWeight(plateCalcTarget.exIdx, w)}
         />
-      )}
-
-      {/* Add Exercise Picker Modal */}
-      {showAddPicker && (
-        <div
-          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Add Exercise to Active Session"
-        >
-          <div className="w-full max-w-lg rounded-2xl bg-zinc-900 border border-white/15 p-6 space-y-4 max-h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-white">Add Exercise to Session</h3>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowAddPicker(false);
-                  setPickerSearch('');
-                  setPickerMuscle('All');
-                }}
-                aria-label="Close session exercise picker"
-                className="p-2 rounded-lg text-zinc-400 hover:text-white"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <input
-              type="search"
-              placeholder="Search exercises or muscles..."
-              value={pickerSearch}
-              onChange={(e) => setPickerSearch(e.target.value)}
-              className="w-full rounded-xl bg-zinc-950 border border-white/10 px-3.5 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#00FF88]"
-            />
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 shrink-0">
-              {(
-                [
-                  'All',
-                  'Chest',
-                  'Back',
-                  'Shoulders',
-                  'Quads',
-                  'Hamstrings',
-                  'Glutes',
-                  'Calves',
-                  'Biceps',
-                  'Triceps',
-                  'Forearms',
-                  'Core',
-                  'Cardio',
-                ] as ('All' | MuscleGroup)[]
-              ).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => setPickerMuscle(m)}
-                  className={`px-2.5 py-1 rounded-lg text-[11px] font-medium whitespace-nowrap shrink-0 ${
-                    pickerMuscle === m
-                      ? 'bg-[#00FF88] text-zinc-950 font-semibold'
-                      : 'bg-zinc-950 text-zinc-400 hover:text-white border border-white/5'
-                  }`}
-                >
-                  {m}
-                </button>
-              ))}
-            </div>
-            <div className="flex-1 overflow-y-auto space-y-2">
-              {allExercises
-                .filter((ex) => {
-                  if (pickerMuscle !== 'All' && ex.muscleGroup !== pickerMuscle) return false;
-                  const q = pickerSearch.trim().toLowerCase();
-                  if (
-                    q &&
-                    !ex.name.toLowerCase().includes(q) &&
-                    !ex.muscleGroup.toLowerCase().includes(q) &&
-                    !ex.equipment.toLowerCase().includes(q)
-                  ) {
-                    return false;
-                  }
-                  return true;
-                })
-                .map((ex) => (
-                <div
-                  key={ex.id}
-                  className="w-full p-3 rounded-xl bg-zinc-950/70 border border-white/10 hover:border-[#00FF88]/50 flex items-center justify-between gap-3"
-                >
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEntries((prev) => [
-                        ...prev,
-                        {
-                          exerciseId: ex.id,
-                          name: ex.name,
-                          targetMuscle: ex.muscleGroup,
-                          sets: [
-                            {
-                              setNumber: 1,
-                              weight: ex.equipment === 'Bodyweight' ? 0 : 40,
-                              reps: 10,
-                              completed: false,
-                            },
-                            {
-                              setNumber: 2,
-                              weight: ex.equipment === 'Bodyweight' ? 0 : 40,
-                              reps: 10,
-                              completed: false,
-                            },
-                            {
-                              setNumber: 3,
-                              weight: ex.equipment === 'Bodyweight' ? 0 : 40,
-                              reps: 10,
-                              completed: false,
-                            },
-                          ],
-                        },
-                      ]);
-                      setShowAddPicker(false);
-                      setPickerSearch('');
-                      setPickerMuscle('All');
-                    }}
-                    className="flex-1 text-left min-w-0"
-                  >
-                    <div className="text-sm font-medium text-white truncate">{ex.name}</div>
-                    <div className="text-xs text-zinc-400">
-                      {ex.muscleGroup} · {ex.equipment} · {ex.difficulty}
-                    </div>
-                  </button>
-                  <div className="flex items-center gap-3 shrink-0">
-                    {!ex.isCustom && (
-                      <a
-                        href={ex.muscleWikiUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 text-[11px] font-medium text-zinc-400 hover:text-[#00FF88]"
-                        title={`View ${ex.name} on MuscleWiki`}
-                      >
-                        MuscleWiki
-                        <ExternalLink className="w-3 h-3" />
-                      </a>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEntries((prev) => [
-                          ...prev,
-                          {
-                            exerciseId: ex.id,
-                            name: ex.name,
-                            targetMuscle: ex.muscleGroup,
-                            sets: [
-                              {
-                                setNumber: 1,
-                                weight: ex.equipment === 'Bodyweight' ? 0 : 40,
-                                reps: 10,
-                                completed: false,
-                              },
-                              {
-                                setNumber: 2,
-                                weight: ex.equipment === 'Bodyweight' ? 0 : 40,
-                                reps: 10,
-                                completed: false,
-                              },
-                              {
-                                setNumber: 3,
-                                weight: ex.equipment === 'Bodyweight' ? 0 : 40,
-                                reps: 10,
-                                completed: false,
-                              },
-                            ],
-                          },
-                        ]);
-                        setShowAddPicker(false);
-                        setPickerSearch('');
-                        setPickerMuscle('All');
-                      }}
-                      aria-label={`Add ${ex.name} to session`}
-                      className="p-1.5 rounded-lg bg-[#00FF88]/10 text-[#00FF88] hover:bg-[#00FF88]/20"
-                    >
-                      <Plus className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
       )}
     </div>
   );

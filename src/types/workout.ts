@@ -79,7 +79,6 @@ export interface Exercise {
   muscleWikiSlug: string;
   muscleWikiUrl: string;
   videoUrl?: string;
-  animationStyle: 'press' | 'pull' | 'squat' | 'hinge' | 'curl' | 'extension' | 'raise' | 'core' | 'cardio';
   isCustom?: boolean;
   notes?: string;
   coachingCues?: string;
@@ -174,12 +173,61 @@ export interface OverloadSuggestion {
 
 export type RecoveryZoneStatus = 'Green' | 'Yellow' | 'Red';
 
+export type RecoveryPhaseLabel =
+  | 'Acute Repair'
+  | 'Protein Synthesis'
+  | 'Supercompensation'
+  | 'Fresh';
+
 export interface MuscleRecoveryStatus {
   muscle: MuscleGroup;
   recoveryPercent: number;
   status: RecoveryZoneStatus;
   hoursSinceTrained: number | null;
   recentSets: number;
+  directSets?: number;
+  indirectSets?: number;
+  hoursToReady?: number;
+  sraWindowHours?: number;
+  phaseLabel?: RecoveryPhaseLabel;
+}
+
+export type VolumeLandmarkZone =
+  | 'Under MV'
+  | 'Below MEV'
+  | 'Optimal MAV'
+  | 'High (Near MRV)'
+  | 'Over MRV';
+
+export interface MuscleVolumeLandmark {
+  muscle: MuscleGroup;
+  weeklyEffectiveSets: number;
+  directSets: number;
+  indirectSets: number;
+  mv: number;
+  mev: number;
+  mavLow: number;
+  mavHigh: number;
+  mrv: number;
+  zone: VolumeLandmarkZone;
+}
+
+export interface TrainingSymmetryReport {
+  pushSets: number;
+  pullSets: number;
+  pushPullRatio: number | null;
+  quadSets: number;
+  posteriorSets: number;
+  quadPosteriorRatio: number | null;
+  upperSets: number;
+  lowerSets: number;
+  upperLowerRatio: number | null;
+  insights: {
+    id: string;
+    title: string;
+    detail: string;
+    status: 'balanced' | 'warning' | 'no-data';
+  }[];
 }
 
 export interface AchievementDef {

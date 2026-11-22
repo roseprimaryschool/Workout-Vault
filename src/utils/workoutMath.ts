@@ -1,17 +1,23 @@
 import {
   AchievementDef,
   DayPlan,
+  Exercise,
   GamificationSummary,
   LoggedExercise,
   MuscleGroup,
   MuscleRecoveryStatus,
+  MuscleVolumeLandmark,
   OverloadSuggestion,
   PersonalRecord,
   PlannedExercise,
+  RecoveryPhaseLabel,
+  TrainingSymmetryReport,
+  VolumeLandmarkZone,
   Weekday,
   WEEKDAYS,
   WorkoutLog,
 } from '../types/workout';
+import { EXERCISE_LIBRARY } from '../data/exercises';
 
 const ALL_MUSCLES: MuscleGroup[] = [
   'Chest',
@@ -27,6 +33,36 @@ const ALL_MUSCLES: MuscleGroup[] = [
   'Core',
   'Cardio',
 ];
+
+export function getLocalDateISO(date: Date = new Date()): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+export function shiftDateISO(dateISO: string, deltaDays: number): string {
+  const [y, m, d] = dateISO.split('-').map(Number);
+  const utc = new Date(Date.UTC(y, (m || 1) - 1, (d || 1) + deltaDays));
+  const yy = utc.getUTCFullYear();
+  const mm = String(utc.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(utc.getUTCDate()).padStart(2, '0');
+  return `${yy}-${mm}-${dd}`;
+}
+
+export function getTodaysWorkoutLog(
+  logs: WorkoutLog[],
+  todayISO: string = getLocalDateISO()
+): WorkoutLog | undefined {
+  return logs.find((l) => l.date === todayISO);
+}
+
+export function hasLoggedWorkoutOnDate(
+  logs: WorkoutLog[],
+  dateISO: string = getLocalDateISO()
+): boolean {
+  return logs.some((l) => l.date === dateISO);
+}
 
 export function calculateE1RM(weight: number, reps: number): number {
   if (weight <= 0 || reps <= 0) return 0;
@@ -211,34 +247,139 @@ export function computeProgressiveOverload(
   };
 }
 
+/**
+ * Muscle-specific physiological SRA (Stimulus-Recovery-Adaptation) parameters.
+ * `tauHours`: exponential recovery time constant reflecting muscle cross-sectional size,
+ *             fiber composition, and typical eccentric mechanical damage profile.
+ * `sraWindowHours`: typical recovery window (hours to >=80% readiness for moderate volume).
+ */
+export const MUSCLE_SRA_PARAMS: Record<
+  MuscleGroup,
+  { tauHours: number; sraWindowHours: number }
+> = {
+  Cardio: { tauHours: 18, sraWindowHours: 24 },
+  Core: { tauHours: 24, sraWindowHours: 36 },
+  Calves: { tauHours: 24, sraWindowHours: 36 },
+  Forearms: { tauHours: 24, sraWindowHours: 36 },
+  Biceps: { tauHours: 30, sraWindowHours: 48 },
+  Triceps: { tauHours: 30, sraWindowHours: 48 },
+  Shoulders: { tauHours: 32, sraWindowHours: 48 },
+  Chest: { tauHours: 40, sraWindowHours: 60 },
+  Back: { tauHours: 40, sraWindowHours: 60 },
+  Glutes: { tauHours: 42, sraWindowHours: 60 },
+  Quads: { tauHours: 48, sraWindowHours: 72 },
+  Hamstrings: { tauHours: 48, sraWindowHours: 72 },
+};
+
+function getRpeFatigueMultiplier(rpe?: number): number {
+  if (typeof rpe !== 'number' || Number.isNaN(rpe)) return 1.0;
+  if (rpe >= 9.5) return 1.25; // Near/at failure increases EIMD & CNS stress
+  if (rpe >= 8.5) return 1.1;
+  if (rpe >= 7.0) return 1.0;
+  return 0.78; // Submaximal / RIR 3+
+}
+
+function getLogTimestampMs(log: WorkoutLog): number {
+  if (log.createdAt) {
+    const parsed = Date.parse(log.createdAt);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return new Date(`${log.date}T12:00:00Z`).getTime();
+}
+
+function buildExerciseMap(extraExercises?: Exercise[]): Map<string, Exercise> {
+  const map = new Map<string, Exercise>();
+  for (const ex of EXERCISE_LIBRARY) {
+    map.set(ex.id, ex);
+  }
+  if (extraExercises) {
+    for (const ex of extraExercises) {
+      map.set(ex.id, ex);
+    }
+  }
+  return map;
+}
+
 export function computeMuscleRecovery(
   logs: WorkoutLog[],
-  nowMs: number = Date.now()
+  nowMs: number = Date.now(),
+  extraExercises?: Exercise[]
 ): { muscles: MuscleRecoveryStatus[]; overallScore: number } {
+  const exerciseMap = buildExerciseMap(extraExercises);
+  const SRA_HORIZON_HOURS = 240; // 10 days decay window
+
   const results: MuscleRecoveryStatus[] = ALL_MUSCLES.map((muscle) => {
+    const params = MUSCLE_SRA_PARAMS[muscle];
     let latestMs: number | null = null;
-    let recentSets = 0;
+    let directSets96h = 0;
+    let indirectSets96h = 0;
+    const sessionImpulses: { residual0: number; tauEff: number }[] = [];
 
     for (const log of logs) {
-      const logTime = new Date(`${log.date}T12:00:00Z`).getTime();
+      const logTime = getLogTimestampMs(log);
       const hoursAgo = Math.max(0, (nowMs - logTime) / (1000 * 60 * 60));
 
-      const matchedEntries = log.entries.filter((e) => e.targetMuscle === muscle);
-      const trainedInList = log.musclesTrained.includes(muscle);
+      let sessionDirectSets = 0;
+      let sessionIndirectSets = 0;
+      let sessionRpeWeightedLoad = 0;
 
-      if (matchedEntries.length > 0 || trainedInList) {
-        if (latestMs === null || logTime > latestMs) {
-          latestMs = logTime;
+      if (log.entries.length > 0) {
+        for (const entry of log.entries) {
+          const completedSets = entry.sets.filter((s) => s.completed);
+          if (completedSets.length === 0) continue;
+
+          const def = exerciseMap.get(entry.exerciseId);
+          const isPrimary = entry.targetMuscle === muscle;
+          const isSecondary =
+            !isPrimary &&
+            Boolean(def?.secondaryMuscles?.includes(muscle));
+
+          if (!isPrimary && !isSecondary) continue;
+
+          const roleWeight = isPrimary ? 1.0 : 0.5;
+          if (isPrimary) {
+            sessionDirectSets += completedSets.length;
+          } else {
+            sessionIndirectSets += completedSets.length;
+          }
+
+          for (const set of completedSets) {
+            sessionRpeWeightedLoad += roleWeight * getRpeFatigueMultiplier(set.rpe);
+          }
         }
-        if (hoursAgo <= 72) {
-          const setsCount =
-            matchedEntries.length > 0
-              ? matchedEntries.reduce((sum, e) => sum + e.sets.filter((s) => s.completed).length, 0)
-              : 3;
-          recentSets += setsCount;
+      } else if (log.musclesTrained.includes(muscle)) {
+        sessionDirectSets = 3;
+        sessionRpeWeightedLoad = 3;
+      }
+
+      if (sessionDirectSets === 0 && sessionIndirectSets === 0) continue;
+
+      if (latestMs === null || logTime > latestMs) {
+        latestMs = logTime;
+      }
+
+      if (hoursAgo <= 96) {
+        directSets96h += sessionDirectSets;
+        indirectSets96h += sessionIndirectSets;
+      }
+
+      if (hoursAgo <= SRA_HORIZON_HOURS && sessionRpeWeightedLoad > 0) {
+        // Dose-response acute fatigue curve + volume-modulated recovery time constant
+        const initialFatigue = Math.min(
+          0.92,
+          0.88 * (1 - Math.exp(-0.38 * sessionRpeWeightedLoad))
+        );
+        const tauEff =
+          params.tauHours * (1 + Math.min(0.35, sessionRpeWeightedLoad * 0.02));
+        const residual = initialFatigue * Math.exp(-hoursAgo / tauEff);
+        if (residual > 0.005) {
+          sessionImpulses.push({ residual0: residual, tauEff });
         }
       }
     }
+
+    const recentEffectiveSets =
+      Math.round((directSets96h + 0.5 * indirectSets96h) * 10) / 10;
 
     if (latestMs === null) {
       return {
@@ -247,24 +388,66 @@ export function computeMuscleRecovery(
         status: 'Green',
         hoursSinceTrained: null,
         recentSets: 0,
+        directSets: 0,
+        indirectSets: 0,
+        hoursToReady: 0,
+        sraWindowHours: params.sraWindowHours,
+        phaseLabel: 'Fresh',
       };
     }
 
     const hoursSince = Math.max(0, Math.round((nowMs - latestMs) / (1000 * 60 * 60)));
-    // Full recovery curves: 72 hours base minus extra fatigue penalty for high recent volume
-    const fatiguePenalty = Math.min(25, recentSets * 1.5);
-    const baseRecovery = Math.min(100, (hoursSince / 72) * 100);
-    const recoveryPercent = Math.max(10, Math.min(100, Math.round(baseRecovery - (hoursSince < 48 ? fatiguePenalty * 0.5 : 0))));
+
+    const capacityAtDelta = (deltaHours: number): number => {
+      let capacity = 1;
+      for (const imp of sessionImpulses) {
+        const dec = imp.residual0 * Math.exp(-deltaHours / imp.tauEff);
+        capacity *= 1 - Math.min(0.95, dec);
+      }
+      return capacity;
+    };
+
+    const currentCapacity = capacityAtDelta(0);
+    const recoveryPercent = Math.max(
+      5,
+      Math.min(100, Math.round(currentCapacity * 100))
+    );
 
     const status =
-      recoveryPercent >= 80 ? 'Green' : recoveryPercent >= 45 ? 'Yellow' : 'Red';
+      recoveryPercent >= 80 ? 'Green' : recoveryPercent >= 50 ? 'Yellow' : 'Red';
+
+    let hoursToReady = 0;
+    if (recoveryPercent < 80) {
+      for (let h = 1; h <= 168; h++) {
+        if (Math.round(capacityAtDelta(h) * 100) >= 80) {
+          hoursToReady = h;
+          break;
+        }
+      }
+    }
+
+    let phaseLabel: RecoveryPhaseLabel = 'Fresh';
+    if (recoveryPercent < 50) {
+      phaseLabel = 'Acute Repair';
+    } else if (recoveryPercent < 80) {
+      phaseLabel = 'Protein Synthesis';
+    } else if (hoursSince <= params.sraWindowHours + 36) {
+      phaseLabel = 'Supercompensation';
+    } else {
+      phaseLabel = 'Fresh';
+    }
 
     return {
       muscle,
       recoveryPercent,
       status,
       hoursSinceTrained: hoursSince,
-      recentSets,
+      recentSets: recentEffectiveSets,
+      directSets: directSets96h,
+      indirectSets: indirectSets96h,
+      hoursToReady,
+      sraWindowHours: params.sraWindowHours,
+      phaseLabel,
     };
   });
 
@@ -273,6 +456,229 @@ export function computeMuscleRecovery(
   );
 
   return { muscles: results, overallScore };
+}
+
+const VOLUME_LANDMARK_TARGETS: Record<
+  MuscleGroup,
+  { mv: number; mev: number; mavLow: number; mavHigh: number; mrv: number }
+> = {
+  Chest: { mv: 4, mev: 8, mavLow: 12, mavHigh: 20, mrv: 22 },
+  Back: { mv: 6, mev: 10, mavLow: 14, mavHigh: 22, mrv: 25 },
+  Shoulders: { mv: 4, mev: 6, mavLow: 12, mavHigh: 20, mrv: 26 },
+  Quads: { mv: 6, mev: 8, mavLow: 12, mavHigh: 18, mrv: 20 },
+  Hamstrings: { mv: 4, mev: 6, mavLow: 10, mavHigh: 16, mrv: 20 },
+  Glutes: { mv: 2, mev: 4, mavLow: 8, mavHigh: 16, mrv: 20 },
+  Calves: { mv: 4, mev: 6, mavLow: 10, mavHigh: 16, mrv: 20 },
+  Biceps: { mv: 4, mev: 6, mavLow: 12, mavHigh: 20, mrv: 24 },
+  Triceps: { mv: 4, mev: 6, mavLow: 10, mavHigh: 16, mrv: 20 },
+  Forearms: { mv: 2, mev: 4, mavLow: 8, mavHigh: 14, mrv: 18 },
+  Core: { mv: 0, mev: 4, mavLow: 8, mavHigh: 16, mrv: 20 },
+  Cardio: { mv: 2, mev: 3, mavLow: 4, mavHigh: 8, mrv: 12 },
+};
+
+export function computeWeeklyVolumeLandmarks(
+  logs: WorkoutLog[],
+  todayISO: string = getLocalDateISO(),
+  extraExercises?: Exercise[]
+): MuscleVolumeLandmark[] {
+  const cutoffISO = shiftDateISO(todayISO, -6);
+  const exerciseMap = buildExerciseMap(extraExercises);
+
+  const directCounts: Record<MuscleGroup, number> = {
+    Chest: 0,
+    Back: 0,
+    Shoulders: 0,
+    Quads: 0,
+    Hamstrings: 0,
+    Glutes: 0,
+    Calves: 0,
+    Biceps: 0,
+    Triceps: 0,
+    Forearms: 0,
+    Core: 0,
+    Cardio: 0,
+  };
+  const indirectCounts: Record<MuscleGroup, number> = { ...directCounts };
+
+  for (const log of logs) {
+    if (log.date < cutoffISO || log.date > todayISO) continue;
+    for (const entry of log.entries) {
+      const done = entry.sets.filter((s) => s.completed).length;
+      if (done === 0) continue;
+      directCounts[entry.targetMuscle] += done;
+      const def = exerciseMap.get(entry.exerciseId);
+      if (def?.secondaryMuscles) {
+        for (const sec of def.secondaryMuscles) {
+          if (sec !== entry.targetMuscle) {
+            indirectCounts[sec] += done;
+          }
+        }
+      }
+    }
+  }
+
+  return ALL_MUSCLES.map((muscle) => {
+    const directSets = directCounts[muscle];
+    const indirectSets = indirectCounts[muscle];
+    const weeklyEffectiveSets = Math.round((directSets + 0.5 * indirectSets) * 10) / 10;
+    const t = VOLUME_LANDMARK_TARGETS[muscle];
+
+    let zone: VolumeLandmarkZone = 'Optimal MAV';
+    if (weeklyEffectiveSets < t.mv) {
+      zone = 'Under MV';
+    } else if (weeklyEffectiveSets < t.mev) {
+      zone = 'Below MEV';
+    } else if (weeklyEffectiveSets <= t.mavHigh) {
+      zone = 'Optimal MAV';
+    } else if (weeklyEffectiveSets <= t.mrv) {
+      zone = 'High (Near MRV)';
+    } else {
+      zone = 'Over MRV';
+    }
+
+    return {
+      muscle,
+      weeklyEffectiveSets,
+      directSets,
+      indirectSets,
+      mv: t.mv,
+      mev: t.mev,
+      mavLow: t.mavLow,
+      mavHigh: t.mavHigh,
+      mrv: t.mrv,
+      zone,
+    };
+  });
+}
+
+export function computeTrainingSymmetry(logs: WorkoutLog[]): TrainingSymmetryReport {
+  const counts: Record<MuscleGroup, number> = {
+    Chest: 0,
+    Back: 0,
+    Shoulders: 0,
+    Quads: 0,
+    Hamstrings: 0,
+    Glutes: 0,
+    Calves: 0,
+    Biceps: 0,
+    Triceps: 0,
+    Forearms: 0,
+    Core: 0,
+    Cardio: 0,
+  };
+
+  for (const log of logs) {
+    for (const entry of log.entries) {
+      const done = entry.sets.filter((s) => s.completed).length;
+      if (done > 0) {
+        counts[entry.targetMuscle] += done;
+      }
+    }
+  }
+
+  const pushSets = counts.Chest + counts.Shoulders + counts.Triceps;
+  const pullSets = counts.Back + counts.Biceps;
+  const quadSets = counts.Quads;
+  const posteriorSets = counts.Hamstrings + counts.Glutes;
+  const upperSets =
+    counts.Chest + counts.Back + counts.Shoulders + counts.Biceps + counts.Triceps + counts.Forearms;
+  const lowerSets = counts.Quads + counts.Hamstrings + counts.Glutes + counts.Calves;
+
+  const pushPullRatio =
+    pushSets > 0 && pullSets > 0 ? Math.round((pushSets / pullSets) * 100) / 100 : null;
+  const quadPosteriorRatio =
+    quadSets > 0 && posteriorSets > 0
+      ? Math.round((quadSets / posteriorSets) * 100) / 100
+      : null;
+  const upperLowerRatio =
+    upperSets > 0 && lowerSets > 0 ? Math.round((upperSets / lowerSets) * 100) / 100 : null;
+
+  const insights: TrainingSymmetryReport['insights'] = [];
+
+  if (pushSets === 0 && pullSets === 0) {
+    insights.push({
+      id: 'push-pull',
+      title: 'Push / Pull Balance',
+      detail: 'Log upper-body sessions to track pressing vs. pulling volume balance.',
+      status: 'no-data',
+    });
+  } else if (pushPullRatio === null) {
+    insights.push({
+      id: 'push-pull',
+      title: 'Push / Pull Imbalance',
+      detail:
+        pushSets > 0
+          ? `${pushSets} Push sets logged with 0 Pull sets — add rows or pulldowns to protect shoulder posture.`
+          : `${pullSets} Pull sets logged with 0 Push sets — add pressing work for balanced upper development.`,
+      status: 'warning',
+    });
+  } else if (pushPullRatio >= 0.8 && pushPullRatio <= 1.2) {
+    insights.push({
+      id: 'push-pull',
+      title: `Push / Pull Balanced (${pushPullRatio}:1)`,
+      detail: `${pushSets} Push sets vs. ${pullSets} Pull sets — optimal postural & scapular equilibrium.`,
+      status: 'balanced',
+    });
+  } else {
+    insights.push({
+      id: 'push-pull',
+      title: `Push / Pull Skew (${pushPullRatio}:1)`,
+      detail:
+        pushPullRatio > 1.2
+          ? `Pressing exceeds pulling (${pushSets} vs ${pullSets} sets). Add horizontal rows or face pulls.`
+          : `Pulling exceeds pressing (${pullSets} vs ${pushSets} sets). Add chest/overhead press volume.`,
+      status: 'warning',
+    });
+  }
+
+  if (quadSets === 0 && posteriorSets === 0) {
+    insights.push({
+      id: 'quad-post',
+      title: 'Quad / Posterior Chain Balance',
+      detail: 'Log lower-body sessions to evaluate anterior vs. posterior leg development.',
+      status: 'no-data',
+    });
+  } else if (quadPosteriorRatio === null) {
+    insights.push({
+      id: 'quad-post',
+      title: 'Lower-Body Skew',
+      detail:
+        quadSets > 0
+          ? `${quadSets} Quad sets with 0 Hamstring/Glute sets — add RDLs or leg curls for knee health.`
+          : `${posteriorSets} Posterior sets with 0 Quad sets — add squat or leg press patterns.`,
+      status: 'warning',
+    });
+  } else if (quadPosteriorRatio >= 0.7 && quadPosteriorRatio <= 1.3) {
+    insights.push({
+      id: 'quad-post',
+      title: `Quad / Posterior Balanced (${quadPosteriorRatio}:1)`,
+      detail: `${quadSets} Quad sets vs. ${posteriorSets} Hamstring/Glute sets — healthy knee & hip stability.`,
+      status: 'balanced',
+    });
+  } else {
+    insights.push({
+      id: 'quad-post',
+      title: `Quad / Posterior Skew (${quadPosteriorRatio}:1)`,
+      detail:
+        quadPosteriorRatio > 1.3
+          ? `Quad-dominant (${quadSets} vs ${posteriorSets} sets). Balance with hinge & hamstring curl volume.`
+          : `Posterior-dominant (${posteriorSets} vs ${quadSets} sets). Add knee-flexion quad work.`,
+      status: 'warning',
+    });
+  }
+
+  return {
+    pushSets,
+    pullSets,
+    pushPullRatio,
+    quadSets,
+    posteriorSets,
+    quadPosteriorRatio,
+    upperSets,
+    lowerSets,
+    upperLowerRatio,
+    insights,
+  };
 }
 
 export function getRankForLevel(level: number): string {
@@ -389,7 +795,7 @@ export function computeCalendarMonth(
   logs: WorkoutLog[],
   year: number,
   monthZeroIndexed: number,
-  todayISO: string = new Date().toISOString().slice(0, 10)
+  todayISO: string = getLocalDateISO()
 ): { cells: CalendarCell[]; consistencyScore: number; completedCount: number; scheduledCount: number } {
   const firstDay = new Date(Date.UTC(year, monthZeroIndexed, 1));
   const daysInMonth = new Date(Date.UTC(year, monthZeroIndexed + 1, 0)).getUTCDate();
@@ -491,7 +897,7 @@ export function computeDashboardStats(
 
   const sevenDaysAgo = new Date();
   sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-  const cutoff = sevenDaysAgo.toISOString().slice(0, 10);
+  const cutoff = getLocalDateISO(sevenDaysAgo);
   const recent7DaysCount = logs.filter((l) => l.date >= cutoff).length;
   const weeklyConsistency =
     logs.length === 0 || plannedTrainingDays === 0

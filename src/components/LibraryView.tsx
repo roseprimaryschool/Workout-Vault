@@ -195,7 +195,6 @@ export const LibraryView: React.FC = () => {
         .filter(Boolean),
       muscleWikiSlug: '',
       muscleWikiUrl: `https://musclewiki.com`,
-      animationStyle: 'press',
       isCustom: true,
       notes: customNotes.trim(),
       coachingCues: customCues.trim(),
@@ -491,7 +490,7 @@ export const LibraryView: React.FC = () => {
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-stretch">
               <div className="md:col-span-2">
-                <ExerciseDemoPlayer exercise={selectedExercise} hideExternalLink />
+                <ExerciseDemoPlayer exercise={selectedExercise} />
               </div>
               <div className="rounded-xl bg-zinc-950 border border-white/10 p-3 flex flex-col items-center justify-center">
                 <MuscleAnatomyDiagram

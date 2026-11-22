@@ -51,6 +51,8 @@ import {
 import {
   computeGamification,
   computeTrainingStreak,
+  getLocalDateISO,
+  hasLoggedWorkoutOnDate,
 } from '../utils/workoutMath';
 
 const LEGACY_KEYS = [
@@ -129,6 +131,7 @@ interface VaultContextValue {
   deleteCustomExercise: (id: string) => Promise<void>;
   saveWorkoutLog: (log: WorkoutLog) => Promise<void>;
   deleteWorkoutLog: (id: string) => Promise<void>;
+  resetTodaysWorkout: (dateISO?: string) => Promise<void>;
   activeTrackerDay: Weekday | null;
   setActiveTrackerDay: (day: Weekday | null) => void;
   resetDemoData: () => Promise<void>;
@@ -336,6 +339,12 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({
         const cloudLogs: WorkoutLog[] = [];
         snap.forEach((docSnap) => {
           const d = docSnap.data();
+          const createdAtIso =
+            d.createdAt && typeof d.createdAt.toDate === 'function'
+              ? d.createdAt.toDate().toISOString()
+              : typeof d.createdAt === 'string'
+              ? d.createdAt
+              : undefined;
           cloudLogs.push({
             id: docSnap.id,
             date: String(d.date),
@@ -348,6 +357,7 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({
             musclesTrained: Array.isArray(d.musclesTrained) ? d.musclesTrained : [],
             entries: Array.isArray(d.entries) ? d.entries : [],
             prsHit: Array.isArray(d.prsHit) ? d.prsHit : [],
+            createdAt: createdAtIso,
           });
         });
         cloudLogs.sort((a, b) => b.date.localeCompare(a.date));
@@ -386,7 +396,6 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({
             instructions: Array.isArray(d.instructions) ? d.instructions : [],
             muscleWikiSlug: '',
             muscleWikiUrl: 'https://musclewiki.com',
-            animationStyle: 'press',
             isCustom: true,
             notes: String(d.notes || ''),
             coachingCues: String(d.coachingCues || ''),
@@ -602,8 +611,42 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
+  const recomputeProfileForLogs = async (nextLogs: WorkoutLog[]) => {
+    const gamification = computeGamification(nextLogs);
+    const unlockedIds = gamification.achievements
+      .filter((a) => a.unlocked)
+      .map((a) => a.id);
+    const nextStreak = computeTrainingStreak(nextLogs);
+
+    setProfile((prev) => ({
+      ...prev,
+      xp: gamification.xp,
+      streakDays: nextStreak,
+      unlockedAchievements: unlockedIds,
+    }));
+
+    if (user) {
+      await updateProfile({
+        xp: gamification.xp,
+        streakDays: nextStreak,
+        unlockedAchievements: unlockedIds,
+      });
+    }
+  };
+
   const saveWorkoutLog = async (log: WorkoutLog) => {
-    const nextLogs = [log, ...logs];
+    if (hasLoggedWorkoutOnDate(logs, log.date)) {
+      throw new Error(
+        `Only 1 workout can be logged per day (${log.date} is already logged). Reset today's workout first to re-log.`
+      );
+    }
+
+    const logWithTimestamp: WorkoutLog = {
+      ...log,
+      createdAt: log.createdAt || new Date().toISOString(),
+    };
+
+    const nextLogs = [logWithTimestamp, ...logs];
     setLogs(nextLogs);
 
     const gamification = computeGamification(nextLogs);
@@ -612,20 +655,19 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({
       .map((a) => a.id);
     const nextStreak = computeTrainingStreak(nextLogs);
 
-    const nextProfile: UserProfile = {
-      ...profile,
+    setProfile((prev) => ({
+      ...prev,
       xp: gamification.xp,
       streakDays: nextStreak,
       unlockedAchievements: unlockedIds,
-    };
-    setProfile(nextProfile);
+    }));
 
     if (user) {
       setSyncStatus('syncing');
-      const path = `users/${user.uid}/logs/${log.id}`;
+      const path = `users/${user.uid}/logs/${logWithTimestamp.id}`;
       try {
-        const cleanLog = sanitizeWorkoutLogForFirestore(log, user.uid);
-        await setDoc(doc(db, 'users', user.uid, 'logs', log.id), {
+        const cleanLog = sanitizeWorkoutLogForFirestore(logWithTimestamp, user.uid);
+        await setDoc(doc(db, 'users', user.uid, 'logs', logWithTimestamp.id), {
           ...cleanLog,
           createdAt: serverTimestamp(),
         });
@@ -642,15 +684,47 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   const deleteWorkoutLog = async (id: string) => {
-    setLogs((prev) => prev.filter((l) => l.id !== id));
+    const nextLogs = logs.filter((l) => l.id !== id);
+    setLogs(nextLogs);
 
     if (user) {
+      setSyncStatus('syncing');
       const path = `users/${user.uid}/logs/${id}`;
       try {
         await deleteDoc(doc(db, 'users', user.uid, 'logs', id));
+        await recomputeProfileForLogs(nextLogs);
+        setSyncStatus('synced');
       } catch (err) {
         handleFirestoreError(err, OperationType.DELETE, path);
       }
+    } else {
+      await recomputeProfileForLogs(nextLogs);
+    }
+  };
+
+  const resetTodaysWorkout = async (dateISO: string = getLocalDateISO()) => {
+    const matching = logs.filter((l) => l.date === dateISO);
+    if (matching.length === 0) return;
+    const nextLogs = logs.filter((l) => l.date !== dateISO);
+    setLogs(nextLogs);
+
+    if (user) {
+      setSyncStatus('syncing');
+      try {
+        await Promise.all(
+          matching.map((m) => deleteDoc(doc(db, 'users', user.uid, 'logs', m.id)))
+        );
+        await recomputeProfileForLogs(nextLogs);
+        setSyncStatus('synced');
+      } catch (err) {
+        handleFirestoreError(
+          err,
+          OperationType.DELETE,
+          `users/${user.uid}/logs/${matching[0].id}`
+        );
+      }
+    } else {
+      await recomputeProfileForLogs(nextLogs);
     }
   };
 
@@ -692,6 +766,7 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({
         deleteCustomExercise,
         saveWorkoutLog,
         deleteWorkoutLog,
+        resetTodaysWorkout,
         activeTrackerDay,
         setActiveTrackerDay,
         resetDemoData,

@@ -1,12 +1,16 @@
 import React, { useMemo, useState } from 'react';
 import {
   Activity,
+  AlertTriangle,
   Award,
   Calendar as CalendarIcon,
+  CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  Clock,
   Flame,
   Lock,
+  Scale,
   Trophy,
 } from 'lucide-react';
 import { useVault } from '../context/VaultContext';
@@ -18,29 +22,48 @@ import {
   computeGamification,
   computeMuscleRecovery,
   computePersonalRecords,
+  computeTrainingSymmetry,
+  computeWeeklyVolumeLandmarks,
+  getLocalDateISO,
 } from '../utils/workoutMath';
 import { MuscleAnatomyDiagram } from './MuscleAnatomyDiagram';
 
 type AnalyticsTab = 'overview' | 'recovery' | 'calendar' | 'history' | 'achievements';
 
 export const AnalyticsView: React.FC = () => {
-  const { logs, plans, profile, allExercises } = useVault();
+  const { logs, plans, profile, allExercises, customExercises } = useVault();
   const [subTab, setSubTab] = useState<AnalyticsTab>('overview');
   const [selectedMuscle, setSelectedMuscle] = useState<MuscleGroup | null>(null);
   const [selectedHistoryExId, setSelectedHistoryExId] = useState<string>('barbell-bench-press');
 
   const now = new Date();
+  const todayISO = getLocalDateISO(now);
   const [calYear, setCalYear] = useState(now.getFullYear());
   const [calMonth, setCalMonth] = useState(now.getMonth());
 
   const stats = useMemo(() => computeDashboardStats(logs, plans), [logs, plans]);
   const gamification = useMemo(() => computeGamification(logs), [logs]);
-  const recovery = useMemo(() => computeMuscleRecovery(logs), [logs]);
+  const recovery = useMemo(
+    () => computeMuscleRecovery(logs, Date.now(), customExercises),
+    [logs, customExercises]
+  );
+  const volumeLandmarks = useMemo(
+    () => computeWeeklyVolumeLandmarks(logs, todayISO, customExercises),
+    [logs, todayISO, customExercises]
+  );
+  const symmetry = useMemo(() => computeTrainingSymmetry(logs), [logs]);
   const personalRecords = useMemo(() => computePersonalRecords(logs), [logs]);
   const calendar = useMemo(
-    () => computeCalendarMonth(plans, logs, calYear, calMonth),
-    [plans, logs, calYear, calMonth]
+    () => computeCalendarMonth(plans, logs, calYear, calMonth, todayISO),
+    [plans, logs, calYear, calMonth, todayISO]
   );
+
+  const inspectedMuscle = useMemo(() => {
+    if (selectedMuscle) {
+      return recovery.muscles.find((m) => m.muscle === selectedMuscle) || recovery.muscles[0];
+    }
+    return [...recovery.muscles].sort((a, b) => a.recoveryPercent - b.recoveryPercent)[0];
+  }, [selectedMuscle, recovery]);
 
   // Build recent 6 workouts volume chart data
   const volumeChartData = useMemo(() => {
@@ -262,6 +285,133 @@ export const AnalyticsView: React.FC = () => {
               )}
             </div>
           </div>
+
+          {/* Weekly Volume Landmarks (MEV / MAV / MRV) & Structural Symmetry */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+            <div className="lg:col-span-7 rounded-2xl bg-zinc-900/65 border border-white/10 p-5 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-base font-semibold text-white">
+                    7-Day Hypertrophy Volume Landmarks
+                  </h2>
+                  <p className="text-xs text-zinc-400">
+                    Effective weekly sets (direct + 0.5× synergist) vs. MEV / MAV / MRV zones
+                  </p>
+                </div>
+                <span className="text-[11px] font-mono text-zinc-400">Rolling 7 Days</span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {volumeLandmarks
+                  .filter((v) => v.muscle !== 'Cardio')
+                  .slice(0, 8)
+                  .map((item) => {
+                    const maxBar = Math.max(item.mrv, item.weeklyEffectiveSets, 1);
+                    const pct = Math.min(100, Math.round((item.weeklyEffectiveSets / maxBar) * 100));
+                    const zoneStyle =
+                      item.zone === 'Optimal MAV'
+                        ? 'text-[#00FF88]'
+                        : item.zone === 'Over MRV'
+                        ? 'text-rose-400'
+                        : item.zone === 'High (Near MRV)'
+                        ? 'text-amber-300'
+                        : 'text-zinc-400';
+                    const barFill =
+                      item.zone === 'Optimal MAV'
+                        ? 'bg-[#00FF88]'
+                        : item.zone === 'Over MRV'
+                        ? 'bg-rose-500'
+                        : item.zone === 'High (Near MRV)'
+                        ? 'bg-amber-400'
+                        : 'bg-zinc-600';
+
+                    return (
+                      <div
+                        key={item.muscle}
+                        className="p-3 rounded-xl bg-zinc-950/75 border border-white/10 space-y-1.5"
+                      >
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="font-medium text-white">{item.muscle}</span>
+                          <span className={`font-mono font-semibold ${zoneStyle}`}>
+                            {item.weeklyEffectiveSets} / {item.mavLow}-{item.mavHigh} sets
+                          </span>
+                        </div>
+                        <div className="h-1.5 rounded-full bg-zinc-900 overflow-hidden">
+                          <div
+                            className={`h-full ${barFill} transition-all`}
+                            style={{ width: `${Math.max(item.weeklyEffectiveSets > 0 ? 6 : 0, pct)}%` }}
+                          />
+                        </div>
+                        <div className="flex items-center justify-between text-[11px] font-mono text-zinc-500">
+                          <span>{item.zone}</span>
+                          <span>MEV {item.mev} · MRV {item.mrv}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+
+            <div className="lg:col-span-5 rounded-2xl bg-zinc-900/65 border border-white/10 p-5 space-y-4">
+              <div className="flex items-center gap-2">
+                <Scale className="w-4 h-4 text-[#A855F7]" />
+                <div>
+                  <h2 className="text-base font-semibold text-white">Structural Symmetry</h2>
+                  <p className="text-xs text-zinc-400">
+                    Antagonist volume ratios to prevent imbalances
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="p-3 rounded-xl bg-zinc-950/75 border border-white/10">
+                  <div className="text-[11px] text-zinc-500">Push : Pull</div>
+                  <div className="text-base font-bold font-mono text-white mt-0.5">
+                    {symmetry.pushPullRatio !== null ? `${symmetry.pushPullRatio}:1` : '—'}
+                  </div>
+                </div>
+                <div className="p-3 rounded-xl bg-zinc-950/75 border border-white/10">
+                  <div className="text-[11px] text-zinc-500">Quad : Post</div>
+                  <div className="text-base font-bold font-mono text-white mt-0.5">
+                    {symmetry.quadPosteriorRatio !== null ? `${symmetry.quadPosteriorRatio}:1` : '—'}
+                  </div>
+                </div>
+                <div className="p-3 rounded-xl bg-zinc-950/75 border border-white/10">
+                  <div className="text-[11px] text-zinc-500">Upper : Lower</div>
+                  <div className="text-base font-bold font-mono text-white mt-0.5">
+                    {symmetry.upperLowerRatio !== null ? `${symmetry.upperLowerRatio}:1` : '—'}
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2.5">
+                {symmetry.insights.map((ins) => (
+                  <div
+                    key={ins.id}
+                    className={`p-3 rounded-xl border text-xs space-y-1 ${
+                      ins.status === 'balanced'
+                        ? 'bg-[#00FF88]/5 border-[#00FF88]/25'
+                        : ins.status === 'warning'
+                        ? 'bg-amber-500/10 border-amber-500/25'
+                        : 'bg-zinc-950/70 border-white/10'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5 font-semibold text-white">
+                      {ins.status === 'balanced' ? (
+                        <CheckCircle2 className="w-3.5 h-3.5 text-[#00FF88] shrink-0" />
+                      ) : ins.status === 'warning' ? (
+                        <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                      ) : (
+                        <Activity className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+                      )}
+                      {ins.title}
+                    </div>
+                    <p className="text-zinc-300 leading-relaxed">{ins.detail}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
@@ -272,10 +422,12 @@ export const AnalyticsView: React.FC = () => {
             <div className="w-full flex items-center justify-between">
               <div>
                 <h2 className="text-base font-semibold text-white">Muscle Recovery Heatmap</h2>
-                <p className="text-xs text-zinc-400">Click any muscle group to inspect readiness</p>
+                <p className="text-xs text-zinc-400">
+                  SRA exponential decay · Direct (1×) + Synergist (0.5×) + RPE load
+                </p>
               </div>
               <div className="text-right">
-                <div className="text-xs text-zinc-400">Recovery Score</div>
+                <div className="text-xs text-zinc-400">Readiness</div>
                 <div className="text-2xl font-bold font-mono text-[#00FF88]">
                   {recovery.overallScore}%
                 </div>
@@ -294,20 +446,82 @@ export const AnalyticsView: React.FC = () => {
             <div className="w-full flex flex-wrap items-center justify-center gap-4 pt-3 border-t border-white/10 text-xs text-zinc-300">
               <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
                 <span className="w-2.5 h-2.5 rounded-full bg-[#00FF88]" />
-                Green · Ready
+                Ready (80–100%)
               </span>
               <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
                 <span className="w-2.5 h-2.5 rounded-full bg-amber-400" />
-                Yellow · Recovering
+                Recovering (50–79%)
               </span>
               <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
                 <span className="w-2.5 h-2.5 rounded-full bg-rose-500" />
-                Red · Fatigued
+                Fatigued (&lt;50%)
               </span>
             </div>
           </div>
 
           <div className="lg:col-span-7 rounded-2xl bg-zinc-900/65 border border-white/10 p-6 space-y-4">
+            {/* Selected Muscle Physiology Inspector */}
+            {inspectedMuscle && (
+              <div className="p-4 rounded-xl bg-zinc-950/90 border border-white/15 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-[11px] font-mono uppercase tracking-wider text-zinc-500">
+                      Physiology Inspector · SRA Curve
+                    </div>
+                    <h3 className="text-base font-bold text-white mt-0.5">
+                      {inspectedMuscle.muscle} — {inspectedMuscle.phaseLabel || 'Fresh'}
+                    </h3>
+                  </div>
+                  <div className="text-right">
+                    <span
+                      className={`text-sm font-mono font-bold ${
+                        inspectedMuscle.status === 'Green'
+                          ? 'text-[#00FF88]'
+                          : inspectedMuscle.status === 'Yellow'
+                          ? 'text-amber-400'
+                          : 'text-rose-400'
+                      }`}
+                    >
+                      {inspectedMuscle.recoveryPercent}% Recovered
+                    </span>
+                    <div className="text-[11px] font-mono text-zinc-400 flex items-center justify-end gap-1 mt-0.5">
+                      <Clock className="w-3 h-3" />
+                      {inspectedMuscle.hoursToReady && inspectedMuscle.hoursToReady > 0
+                        ? `~${inspectedMuscle.hoursToReady}h to Green (80%)`
+                        : 'Cleared for heavy stimulus'}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-mono">
+                  <div className="p-2.5 rounded-lg bg-zinc-900/90 border border-white/5">
+                    <div className="text-zinc-500 text-[10px]">Direct Sets (96h)</div>
+                    <div className="text-white font-semibold mt-0.5">
+                      {inspectedMuscle.directSets ?? 0} sets
+                    </div>
+                  </div>
+                  <div className="p-2.5 rounded-lg bg-zinc-900/90 border border-white/5">
+                    <div className="text-zinc-500 text-[10px]">Synergist (0.5×)</div>
+                    <div className="text-white font-semibold mt-0.5">
+                      {inspectedMuscle.indirectSets ?? 0} sets
+                    </div>
+                  </div>
+                  <div className="p-2.5 rounded-lg bg-zinc-900/90 border border-white/5">
+                    <div className="text-zinc-500 text-[10px]">Effective Stimulus</div>
+                    <div className="text-[#A855F7] font-semibold mt-0.5">
+                      {inspectedMuscle.recentSets} sets
+                    </div>
+                  </div>
+                  <div className="p-2.5 rounded-lg bg-zinc-900/90 border border-white/5">
+                    <div className="text-zinc-500 text-[10px]">Typical SRA Window</div>
+                    <div className="text-zinc-200 font-semibold mt-0.5">
+                      {inspectedMuscle.sraWindowHours ?? 48}h
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <h2 className="text-base font-semibold text-white">Muscle Readiness Breakdown</h2>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {recovery.muscles.map((m) => {
@@ -330,7 +544,7 @@ export const AnalyticsView: React.FC = () => {
                     type="button"
                     onClick={() => setSelectedMuscle(m.muscle)}
                     className={`p-3.5 rounded-xl bg-zinc-950/75 border text-left transition-colors ${
-                      selectedMuscle === m.muscle
+                      inspectedMuscle?.muscle === m.muscle
                         ? 'border-white/40'
                         : 'border-white/10 hover:border-white/20'
                     }`}
@@ -338,7 +552,7 @@ export const AnalyticsView: React.FC = () => {
                     <div className="flex items-center justify-between text-sm">
                       <span className="font-medium text-white">{m.muscle}</span>
                       <span className={`font-mono text-xs font-semibold ${statusBadge}`}>
-                        {m.status} · {m.recoveryPercent}%
+                        {m.recoveryPercent}% · {m.phaseLabel || m.status}
                       </span>
                     </div>
                     <div className="h-1.5 rounded-full bg-zinc-900 mt-2 overflow-hidden">
@@ -347,10 +561,17 @@ export const AnalyticsView: React.FC = () => {
                         style={{ width: `${m.recoveryPercent}%` }}
                       />
                     </div>
-                    <div className="text-[11px] text-zinc-500 font-mono mt-1.5">
-                      {m.hoursSinceTrained === null
-                        ? 'Fresh · Not trained recently'
-                        : `Last trained ${m.hoursSinceTrained}h ago · ${m.recentSets} recent sets`}
+                    <div className="flex items-center justify-between text-[11px] text-zinc-500 font-mono mt-1.5">
+                      <span>
+                        {m.hoursSinceTrained === null
+                          ? 'Fresh · Untrained'
+                          : `${m.hoursSinceTrained}h ago · ${m.recentSets} eff. sets`}
+                      </span>
+                      {m.hoursToReady && m.hoursToReady > 0 ? (
+                        <span className="text-zinc-400">~{m.hoursToReady}h left</span>
+                      ) : (
+                        <span className="text-[#00FF88]/80">Ready</span>
+                      )}
                     </div>
                   </button>
                 );

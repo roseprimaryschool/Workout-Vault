@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { ExternalLink, Pause, Play } from 'lucide-react';
+import { Dumbbell, ExternalLink, Film, ShieldCheck } from 'lucide-react';
 import { Exercise } from '../types/workout';
 import { loadLocalMediaObjectUrl } from '../utils/mediaStorage';
 import { sanitizeSafeUrl } from '../utils/validation';
@@ -13,8 +13,6 @@ export const ExerciseDemoPlayer: React.FC<ExerciseDemoPlayerProps> = ({
   exercise,
   hideExternalLink = false,
 }) => {
-  const [playing, setPlaying] = useState(true);
-  const [phase, setPhase] = useState(0);
   const [localMediaUrl, setLocalMediaUrl] = useState<string | null>(null);
 
   useEffect(() => {
@@ -37,14 +35,6 @@ export const ExerciseDemoPlayer: React.FC<ExerciseDemoPlayerProps> = ({
       if (createdUrl) URL.revokeObjectURL(createdUrl);
     };
   }, [exercise.mediaLocalId, exercise.id]);
-
-  useEffect(() => {
-    if (!playing) return;
-    const interval = window.setInterval(() => {
-      setPhase((p) => (p + 0.06) % (Math.PI * 2));
-    }, 40);
-    return () => window.clearInterval(interval);
-  }, [playing]);
 
   const safeRemoteUrl = sanitizeSafeUrl(exercise.mediaUrl || '');
   const resolvedMedia = localMediaUrl || safeRemoteUrl;
@@ -78,158 +68,73 @@ export const ExerciseDemoPlayer: React.FC<ExerciseDemoPlayerProps> = ({
     );
   }
 
-  // Animated biomechanical MuscleWiki movement preview with MuscleWiki link
-  const oscillation = (Math.sin(phase) + 1) / 2; // 0..1
-  const repPhaseLabel = oscillation > 0.55 ? 'Concentric Drive' : oscillation < 0.2 ? 'Peak Stretch' : 'Controlled Eccentric';
+  if (exercise.isCustom) {
+    return (
+      <div className="relative rounded-xl overflow-hidden bg-zinc-950 border border-white/10 p-5 flex flex-col justify-between gap-4 min-h-[210px]">
+        <div className="flex items-center justify-between text-xs text-zinc-400">
+          <span className="inline-flex items-center gap-1.5 font-medium text-zinc-300">
+            <Film className="w-4 h-4 text-[#A855F7]" />
+            Custom Exercise Media
+          </span>
+          <span className="font-mono text-zinc-500">{exercise.equipment}</span>
+        </div>
+        <div className="space-y-1.5">
+          <p className="text-sm font-semibold text-white">No video or image uploaded yet</p>
+          <p className="text-xs text-zinc-400 leading-relaxed">
+            Follow your custom coaching cues and execution steps below during training.
+          </p>
+        </div>
+        <div className="text-[11px] text-zinc-500 pt-2 border-t border-white/10">
+          Target: {exercise.muscleGroup} · {exercise.difficulty} · {exercise.exerciseType}
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="relative rounded-xl overflow-hidden bg-zinc-950 border border-white/10 aspect-video flex flex-col justify-between p-4">
-      <div className="flex items-center justify-between text-xs text-zinc-400">
-        <span>MuscleWiki Movement Guide · {exercise.equipment}</span>
-        <span className="font-mono text-[#00FF88]">{repPhaseLabel}</span>
+    <div className="relative rounded-xl overflow-hidden bg-zinc-950 border border-white/10 p-5 flex flex-col justify-between gap-4 min-h-[210px]">
+      <div className="flex items-center justify-between gap-2 text-xs text-zinc-400">
+        <span className="inline-flex items-center gap-1.5 font-medium text-zinc-200">
+          <ShieldCheck className="w-4 h-4 text-[#00FF88]" />
+          MuscleWiki HD Movement Guide
+        </span>
+        <span className="font-mono text-[#A855F7]">{exercise.equipment}</span>
       </div>
 
-      <div className="flex-1 flex items-center justify-center">
-        <svg viewBox="0 0 260 120" className="w-full max-w-[260px] h-28" aria-label={`${exercise.name} movement demonstration`}>
-          {/* Floor / Bench reference */}
-          <line x1="30" y1="104" x2="230" y2="104" stroke="#27272A" strokeWidth="2" />
-
-          {exercise.animationStyle === 'press' && (
-            <g>
-              {/* Bench */}
-              <rect x="65" y="78" width="130" height="8" rx="3" fill="#27272A" />
-              <rect x="85" y="86" width="8" height="18" fill="#3F3F46" />
-              <rect x="167" y="86" width="8" height="18" fill="#3F3F46" />
-              {/* Athlete Torso & Head */}
-              <circle cx="80" cy="68" r="7" fill="#52525B" />
-              <rect x="88" y="69" width="66" height="9" rx="4" fill="#3F3F46" />
-              {/* Moving Bar + Arms */}
-              <line
-                x1="120"
-                y1="71"
-                x2="120"
-                y2={64 - oscillation * 34}
-                stroke="#A855F7"
-                strokeWidth="4"
-                strokeLinecap="round"
-              />
-              <line
-                x1="78"
-                y1={64 - oscillation * 34}
-                x2="162"
-                y2={64 - oscillation * 34}
-                stroke="#00FF88"
-                strokeWidth="3.5"
-                strokeLinecap="round"
-              />
-              <rect x="74" y={54 - oscillation * 34} width="6" height="20" rx="2" fill="#E4E4E7" />
-              <rect x="160" y={54 - oscillation * 34} width="6" height="20" rx="2" fill="#E4E4E7" />
-            </g>
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-900 border border-white/10 text-zinc-200">
+            <Dumbbell className="w-3.5 h-3.5 text-[#00FF88]" />
+            Primary: {exercise.muscleGroup}
+          </span>
+          {exercise.secondaryMuscles.length > 0 && (
+            <span className="px-2.5 py-1 rounded-lg bg-zinc-900 border border-white/10 text-zinc-400">
+              Secondary: {exercise.secondaryMuscles.join(', ')}
+            </span>
           )}
+          <span className="px-2.5 py-1 rounded-lg bg-zinc-900 border border-white/10 text-zinc-400">
+            {exercise.difficulty} · {exercise.exerciseType}
+          </span>
+        </div>
 
-          {exercise.animationStyle === 'squat' && (
-            <g>
-              {/* Squatting Stick Figure + Barbell */}
-              {(() => {
-                const hipY = 58 + oscillation * 24;
-                const shoulderY = 30 + oscillation * 22;
-                return (
-                  <>
-                    <line x1="115" y1="103" x2="125" y2="78" stroke="#52525B" strokeWidth="4" strokeLinecap="round" />
-                    <line x1="125" y1="78" x2="112" y2={hipY} stroke="#00FF88" strokeWidth="4.5" strokeLinecap="round" />
-                    <line x1="112" y1={hipY} x2="132" y2={shoulderY} stroke="#A855F7" strokeWidth="5" strokeLinecap="round" />
-                    <circle cx="135" cy={shoulderY - 10} r="6.5" fill="#71717A" />
-                    {/* Barbell */}
-                    <line x1="95" y1={shoulderY + 2} x2="165" y2={shoulderY + 2} stroke="#E4E4E7" strokeWidth="3" />
-                    <rect x="92" y={shoulderY - 6} width="5" height="16" rx="1.5" fill="#00FF88" />
-                    <rect x="163" y={shoulderY - 6} width="5" height="16" rx="1.5" fill="#00FF88" />
-                  </>
-                );
-              })()}
-            </g>
-          )}
-
-          {(exercise.animationStyle === 'hinge' || exercise.animationStyle === 'pull') && (
-            <g>
-              {(() => {
-                const lift = oscillation * 28;
-                return (
-                  <>
-                    <line x1="115" y1="103" x2="122" y2="76" stroke="#52525B" strokeWidth="4" strokeLinecap="round" />
-                    <line x1="122" y1="76" x2="110" y2="56" stroke="#71717A" strokeWidth="4.5" strokeLinecap="round" />
-                    <line
-                      x1="110"
-                      y1="56"
-                      x2={145 - oscillation * 22}
-                      y2={48 - lift * 0.45}
-                      stroke="#00FF88"
-                      strokeWidth="5"
-                      strokeLinecap="round"
-                    />
-                    <circle cx={150 - oscillation * 22} cy={40 - lift * 0.45} r="6.5" fill="#71717A" />
-                    <line
-                      x1={142 - oscillation * 22}
-                      y1={48 - lift * 0.45}
-                      x2="136"
-                      y2={94 - lift}
-                      stroke="#A855F7"
-                      strokeWidth="3.5"
-                      strokeLinecap="round"
-                    />
-                    <line x1="96" y1={94 - lift} x2="176" y2={94 - lift} stroke="#E4E4E7" strokeWidth="3" />
-                    <circle cx="96" cy={94 - lift} r="9" fill="none" stroke="#00FF88" strokeWidth="2.5" />
-                    <circle cx="176" cy={94 - lift} r="9" fill="none" stroke="#00FF88" strokeWidth="2.5" />
-                  </>
-                );
-              })()}
-            </g>
-          )}
-
-          {(exercise.animationStyle === 'curl' ||
-            exercise.animationStyle === 'extension' ||
-            exercise.animationStyle === 'raise' ||
-            exercise.animationStyle === 'core' ||
-            exercise.animationStyle === 'cardio') && (
-            <g>
-              {(() => {
-                const angle = -0.3 + oscillation * 1.4;
-                const handX = 130 + Math.cos(angle) * 32;
-                const handY = 64 - Math.sin(angle) * 32;
-                return (
-                  <>
-                    <circle cx="122" cy="24" r="7" fill="#71717A" />
-                    <line x1="122" y1="32" x2="122" y2="74" stroke="#52525B" strokeWidth="6" strokeLinecap="round" />
-                    <line x1="122" y1="74" x2="112" y2="103" stroke="#52525B" strokeWidth="4.5" strokeLinecap="round" />
-                    <line x1="122" y1="74" x2="134" y2="103" stroke="#52525B" strokeWidth="4.5" strokeLinecap="round" />
-                    <line x1="122" y1="40" x2="130" y2="64" stroke="#A855F7" strokeWidth="4" strokeLinecap="round" />
-                    <line x1="130" y1="64" x2={handX} y2={handY} stroke="#00FF88" strokeWidth="4" strokeLinecap="round" />
-                    <circle cx={handX} cy={handY} r="5.5" fill="#E4E4E7" />
-                  </>
-                );
-              })()}
-            </g>
-          )}
-        </svg>
+        <p className="text-xs text-zinc-400 leading-relaxed">
+          Open the exact MuscleWiki page for <span className="text-zinc-200 font-medium">{exercise.name}</span> to watch multi-angle male &amp; female form demonstration videos.
+        </p>
       </div>
 
-      <div className="flex items-center justify-between gap-3 pt-2 border-t border-white/10">
-        <button
-          type="button"
-          onClick={() => setPlaying((p) => !p)}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-900 border border-white/10 text-xs font-medium text-zinc-200 hover:bg-zinc-800 transition-colors"
-        >
-          {playing ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
-          {playing ? 'Pause Loop' : 'Play Loop'}
-        </button>
+      <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-white/10">
+        <span className="text-[11px] font-mono text-zinc-500 truncate max-w-[260px]">
+          /exercise/{exercise.muscleWikiSlug}
+        </span>
 
-        {!hideExternalLink && !exercise.isCustom && (
+        {!hideExternalLink && (
           <a
             href={exercise.muscleWikiUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#00FF88]/15 border border-[#00FF88]/40 text-xs font-semibold text-[#00FF88] hover:bg-[#00FF88]/25 transition-colors whitespace-nowrap"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#00FF88] text-zinc-950 text-xs font-semibold hover:bg-[#00FF88]/90 transition-colors whitespace-nowrap"
           >
-            View on MuscleWiki
+            Watch Video on MuscleWiki
             <ExternalLink className="w-3.5 h-3.5" />
           </a>
         )}

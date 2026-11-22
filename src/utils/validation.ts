@@ -90,9 +90,11 @@ export function sanitizeDayPlanForFirestore(plan: DayPlan, userId: string) {
 }
 
 export function sanitizeWorkoutLogForFirestore(log: WorkoutLog, userId: string) {
+  const now = new Date();
+  const localToday = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   const validDate = BLUEPRINT_LIMITS.DATE_PATTERN.test(log.date)
     ? log.date
-    : new Date().toISOString().slice(0, 10);
+    : localToday;
 
   const sanitizedEntries = log.entries.slice(0, BLUEPRINT_LIMITS.LOG_ENTRIES_MAX).map((entry) => ({
     exerciseId: clampString(entry.exerciseId, 80),
