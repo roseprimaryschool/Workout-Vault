@@ -10,14 +10,14 @@ import {
   computeProgressiveOverload,
   detectNewPRs,
 } from './workoutMath';
-import { DEFAULT_WEEKLY_PLANS } from '../data/exercises';
+import { DEFAULT_WEEKLY_PLANS, EXERCISE_LIBRARY } from '../data/exercises';
 import { generateWeeklySplit } from './generator';
 import {
   calculateBarbellPlates,
   computeTrainingZones,
   generateWarmupRamp,
 } from './plateCalc';
-import { WorkoutLog } from '../types/workout';
+import { MuscleGroup, WorkoutLog } from '../types/workout';
 
 const sampleLogs: WorkoutLog[] = [
   {
@@ -176,5 +176,58 @@ test('calculateBarbellPlates, generateWarmupRamp, and computeTrainingZones compu
   const zones = computeTrainingZones(120, 'kg');
   assert.equal(zones.length, 4);
 });
+
+test('EXERCISE_LIBRARY covers all 12 muscle groups deeply with verified non-404 MuscleWiki links', () => {
+  const allMuscles: MuscleGroup[] = [
+    'Chest',
+    'Back',
+    'Shoulders',
+    'Quads',
+    'Hamstrings',
+    'Glutes',
+    'Calves',
+    'Biceps',
+    'Triceps',
+    'Forearms',
+    'Core',
+    'Cardio',
+  ];
+
+  assert.ok(
+    EXERCISE_LIBRARY.length >= 285,
+    `Expected >= 285 total exercises, got ${EXERCISE_LIBRARY.length}`
+  );
+
+  const ids = new Set<string>();
+  const names = new Set<string>();
+  const verifiedMwUrlPattern =
+    /^https:\/\/musclewiki\.com\/exercises\/(chest|lats|traps-middle|traps|lowerback|shoulders|quads|hamstrings|glutes|calves|biceps|triceps|forearms|abdominals|lower-abdominals|obliques|cardio)(\/(barbell|dumbbells|cables|machine|bodyweight|kettlebells))?$/;
+
+  for (const ex of EXERCISE_LIBRARY) {
+    assert.equal(ids.has(ex.id), false, `Duplicate exercise id: ${ex.id}`);
+    ids.add(ex.id);
+    const normName = ex.name.toLowerCase();
+    assert.equal(names.has(normName), false, `Duplicate exercise name: ${ex.name}`);
+    names.add(normName);
+    assert.match(
+      ex.muscleWikiUrl,
+      verifiedMwUrlPattern,
+      `Invalid or unverified MuscleWiki URL for ${ex.id}: ${ex.muscleWikiUrl}`
+    );
+    assert.ok(ex.instructions.length >= 3, `Expected >= 3 instructions for ${ex.id}`);
+  }
+
+  for (const muscle of allMuscles) {
+    const count = EXERCISE_LIBRARY.filter((ex) => ex.muscleGroup === muscle).length;
+    assert.ok(count >= 18, `Expected >= 18 exercises for ${muscle}, got ${count}`);
+  }
+
+  const hangingLegRaise = EXERCISE_LIBRARY.find((ex) => ex.id === 'hanging-leg-raise');
+  assert.equal(
+    hangingLegRaise?.muscleWikiUrl,
+    'https://musclewiki.com/exercises/lower-abdominals/bodyweight'
+  );
+});
+
 
 

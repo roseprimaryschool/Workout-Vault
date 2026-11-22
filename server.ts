@@ -70,7 +70,7 @@ function parseModelJson<T>(raw: string | undefined, fallbackObj: T): T {
 }
 
 function getGeminiClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (!apiKey) {
     throw new Error('GEMINI_API_KEY is not configured in environment.');
   }
@@ -95,7 +95,7 @@ async function generateWithFallback(
     for (let attempt = 1; attempt <= attempts; attempt++) {
       try {
         const params = buildParams(model);
-        const timeoutMs = model === COACH_MODELS[0] ? 6000 : 15000;
+        const timeoutMs = model === COACH_MODELS[0] ? 15000 : 20000;
         return await ai.models.generateContent({
           ...params,
           config: {
@@ -105,10 +105,6 @@ async function generateWithFallback(
         });
       } catch (err) {
         lastError = err;
-        console.warn(
-          `[AI Coach] Model ${model} attempt ${attempt} failed:`,
-          err instanceof Error ? err.message : err
-        );
         if (!isTransientError(err)) {
           throw err;
         }
@@ -229,8 +225,15 @@ app.post('/api/coach/generate-plan', async (req, res) => {
       req.body || {};
 
     const exerciseCatalog = Array.isArray(availableExercises)
-      ? availableExercises.slice(0, 45)
+      ? availableExercises.slice(0, 320)
       : [];
+
+    const catalogLines = exerciseCatalog
+      .map((ex: Record<string, unknown>) =>
+        `${String(ex?.exerciseId || '')} | ${String(ex?.name || '')} | ${String(ex?.muscleGroup || '')} | ${String(ex?.equipment || '')}`
+      )
+      .join('\n')
+      .slice(0, 18500);
 
     const prompt = `Build a complete 7-day (monday through sunday) training program for this athlete.
 Primary Goal: ${String(goal || 'Hypertrophy & Strength').slice(0, 120)}
@@ -239,8 +242,8 @@ Equipment Access: ${String(equipment || 'Full Commercial Gym').slice(0, 80)}
 Weight Unit: ${weightUnit === 'lbs' ? 'lbs' : 'kg'}
 Additional Focus Notes: ${String(focusNotes || 'Balanced full-body development').slice(0, 300)}
 
-Available Exercise Catalog (ONLY choose exerciseId values from this list):
-${JSON.stringify(exerciseCatalog).slice(0, 6000)}
+Available Exercise Catalog (exerciseId | name | muscleGroup | equipment — ONLY choose exerciseId values from this list):
+${catalogLines}
 
 Rules:
 - Populate the "days" array with ALL 7 days: monday, tuesday, wednesday, thursday, friday, saturday, sunday.

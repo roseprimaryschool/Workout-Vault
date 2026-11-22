@@ -75,7 +75,7 @@ async function generateWithFallback(
     for (let attempt = 1; attempt <= attempts; attempt++) {
       try {
         const params = buildParams(model);
-        const timeoutMs = model === COACH_MODELS[0] ? 6000 : 15000;
+        const timeoutMs = model === COACH_MODELS[0] ? 12000 : 15000;
         return await ai.models.generateContent({
           ...params,
           config: {
@@ -99,9 +99,12 @@ export default async function handler(req: ReqLike, res: ResLike) {
     return;
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (!apiKey) {
-    res.status(500).json({ error: 'GEMINI_API_KEY is not configured in Vercel environment variables.' });
+    res.status(500).json({
+      error:
+        'GEMINI_API_KEY is missing in Vercel Environment Variables. Add GEMINI_API_KEY in Vercel Project → Settings → Environment Variables, then redeploy.',
+    });
     return;
   }
 
@@ -121,8 +124,14 @@ export default async function handler(req: ReqLike, res: ResLike) {
 
     if (url.includes('generate-plan') || body.action === 'generate-plan') {
       const exerciseCatalog = Array.isArray(body.availableExercises)
-        ? body.availableExercises.slice(0, 45)
+        ? body.availableExercises.slice(0, 320)
         : [];
+      const catalogLines = exerciseCatalog
+        .map((ex: Record<string, unknown>) =>
+          `${String(ex?.exerciseId || '')} | ${String(ex?.name || '')} | ${String(ex?.muscleGroup || '')} | ${String(ex?.equipment || '')}`
+        )
+        .join('\n')
+        .slice(0, 18500);
       const prompt = `Build a complete 7-day (monday through sunday) training program for this athlete.
 Primary Goal: ${String(body.goal || 'Hypertrophy & Strength').slice(0, 120)}
 Training Days Per Week: ${Math.max(2, Math.min(6, Number(body.daysPerWeek) || 4))}
@@ -130,8 +139,8 @@ Equipment Access: ${String(body.equipment || 'Full Commercial Gym').slice(0, 80)
 Weight Unit: ${body.weightUnit === 'lbs' ? 'lbs' : 'kg'}
 Additional Focus Notes: ${String(body.focusNotes || 'Balanced full-body development').slice(0, 300)}
 
-Available Exercise Catalog (ONLY choose exerciseId values from this list):
-${JSON.stringify(exerciseCatalog).slice(0, 6000)}
+Available Exercise Catalog (exerciseId | name | muscleGroup | equipment — ONLY choose exerciseId values from this list):
+${catalogLines}
 
 Rules:
 - Populate the "days" array with ALL 7 days: monday, tuesday, wednesday, thursday, friday, saturday, sunday.

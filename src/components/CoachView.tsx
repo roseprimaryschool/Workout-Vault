@@ -90,12 +90,11 @@ export const CoachView: React.FC<CoachViewProps> = ({ onOpenPlanner }) => {
     setProgramApplied(false);
 
     try {
-      const compactCatalog = allExercises.slice(0, 45).map((ex) => ({
+      const compactCatalog = allExercises.slice(0, 320).map((ex) => ({
         exerciseId: ex.id,
         name: ex.name,
         muscleGroup: ex.muscleGroup,
         equipment: ex.equipment,
-        difficulty: ex.difficulty,
       }));
 
       const res = await fetch('/api/coach/generate-plan', {

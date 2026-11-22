@@ -12,6 +12,11 @@
       ]
     }
   ],
+  "functions": {
+    "api/coach.ts": {
+      "maxDuration": 30
+    }
+  },
   "rewrites": [
     { "source": "/api/coach/(.*)", "destination": "/api/coach" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }

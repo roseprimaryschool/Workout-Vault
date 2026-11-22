@@ -5,6 +5,7 @@ import {
   Check,
   Clock,
   Copy,
+  ExternalLink,
   Play,
   Plus,
   SkipForward,
@@ -86,6 +87,8 @@ export const TrackerView: React.FC = () => {
   const [restRemaining, setRestRemaining] = useState(0);
   const [chimeEnabled, setChimeEnabled] = useState(true);
   const [showAddPicker, setShowAddPicker] = useState(false);
+  const [pickerSearch, setPickerSearch] = useState('');
+  const [pickerMuscle, setPickerMuscle] = useState<'All' | MuscleGroup>('All');
   const [completedSummary, setCompletedSummary] = useState<WorkoutLog | null>(null);
   const [copiedRecap, setCopiedRecap] = useState(false);
   const [plateCalcTarget, setPlateCalcTarget] = useState<{
@@ -523,7 +526,24 @@ export const TrackerView: React.FC = () => {
                     <div className="text-xs text-zinc-400">
                       {entry.targetMuscle} · Previous: {overload.previousBestText}
                     </div>
-                    <h2 className="text-lg font-semibold text-white mt-0.5">{entry.name}</h2>
+                    <div className="flex items-center gap-3 mt-0.5">
+                      <h2 className="text-lg font-semibold text-white">{entry.name}</h2>
+                      {(() => {
+                        const libEx = allExercises.find((e) => e.id === entry.exerciseId);
+                        if (!libEx || libEx.isCustom) return null;
+                        return (
+                          <a
+                            href={libEx.muscleWikiUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-xs font-medium text-[#00FF88] hover:underline"
+                          >
+                            MuscleWiki
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        );
+                      })()}
+                    </div>
                   </div>
 
                   {/* Progressive Overload Assistant & Plate Loader */}
@@ -708,59 +728,173 @@ export const TrackerView: React.FC = () => {
               <h3 className="text-lg font-semibold text-white">Add Exercise to Session</h3>
               <button
                 type="button"
-                onClick={() => setShowAddPicker(false)}
+                onClick={() => {
+                  setShowAddPicker(false);
+                  setPickerSearch('');
+                  setPickerMuscle('All');
+                }}
                 aria-label="Close session exercise picker"
                 className="p-2 rounded-lg text-zinc-400 hover:text-white"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto space-y-2">
-              {allExercises.map((ex) => (
+            <input
+              type="search"
+              placeholder="Search exercises or muscles..."
+              value={pickerSearch}
+              onChange={(e) => setPickerSearch(e.target.value)}
+              className="w-full rounded-xl bg-zinc-950 border border-white/10 px-3.5 py-2 text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#00FF88]"
+            />
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 shrink-0">
+              {(
+                [
+                  'All',
+                  'Chest',
+                  'Back',
+                  'Shoulders',
+                  'Quads',
+                  'Hamstrings',
+                  'Glutes',
+                  'Calves',
+                  'Biceps',
+                  'Triceps',
+                  'Forearms',
+                  'Core',
+                  'Cardio',
+                ] as ('All' | MuscleGroup)[]
+              ).map((m) => (
                 <button
-                  key={ex.id}
+                  key={m}
                   type="button"
-                  onClick={() => {
-                    setEntries((prev) => [
-                      ...prev,
-                      {
-                        exerciseId: ex.id,
-                        name: ex.name,
-                        targetMuscle: ex.muscleGroup,
-                        sets: [
-                          {
-                            setNumber: 1,
-                            weight: ex.equipment === 'Bodyweight' ? 0 : 40,
-                            reps: 10,
-                            completed: false,
-                          },
-                          {
-                            setNumber: 2,
-                            weight: ex.equipment === 'Bodyweight' ? 0 : 40,
-                            reps: 10,
-                            completed: false,
-                          },
-                          {
-                            setNumber: 3,
-                            weight: ex.equipment === 'Bodyweight' ? 0 : 40,
-                            reps: 10,
-                            completed: false,
-                          },
-                        ],
-                      },
-                    ]);
-                    setShowAddPicker(false);
-                  }}
-                  className="w-full p-3 rounded-xl bg-zinc-950/70 border border-white/10 hover:border-[#00FF88]/50 text-left flex items-center justify-between"
+                  onClick={() => setPickerMuscle(m)}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-medium whitespace-nowrap shrink-0 ${
+                    pickerMuscle === m
+                      ? 'bg-[#00FF88] text-zinc-950 font-semibold'
+                      : 'bg-zinc-950 text-zinc-400 hover:text-white border border-white/5'
+                  }`}
                 >
-                  <div>
-                    <div className="text-sm font-medium text-white">{ex.name}</div>
-                    <div className="text-xs text-zinc-400">
-                      {ex.muscleGroup} · {ex.equipment}
-                    </div>
-                  </div>
-                  <Plus className="w-4 h-4 text-[#00FF88]" />
+                  {m}
                 </button>
+              ))}
+            </div>
+            <div className="flex-1 overflow-y-auto space-y-2">
+              {allExercises
+                .filter((ex) => {
+                  if (pickerMuscle !== 'All' && ex.muscleGroup !== pickerMuscle) return false;
+                  const q = pickerSearch.trim().toLowerCase();
+                  if (
+                    q &&
+                    !ex.name.toLowerCase().includes(q) &&
+                    !ex.muscleGroup.toLowerCase().includes(q) &&
+                    !ex.equipment.toLowerCase().includes(q)
+                  ) {
+                    return false;
+                  }
+                  return true;
+                })
+                .map((ex) => (
+                <div
+                  key={ex.id}
+                  className="w-full p-3 rounded-xl bg-zinc-950/70 border border-white/10 hover:border-[#00FF88]/50 flex items-center justify-between gap-3"
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEntries((prev) => [
+                        ...prev,
+                        {
+                          exerciseId: ex.id,
+                          name: ex.name,
+                          targetMuscle: ex.muscleGroup,
+                          sets: [
+                            {
+                              setNumber: 1,
+                              weight: ex.equipment === 'Bodyweight' ? 0 : 40,
+                              reps: 10,
+                              completed: false,
+                            },
+                            {
+                              setNumber: 2,
+                              weight: ex.equipment === 'Bodyweight' ? 0 : 40,
+                              reps: 10,
+                              completed: false,
+                            },
+                            {
+                              setNumber: 3,
+                              weight: ex.equipment === 'Bodyweight' ? 0 : 40,
+                              reps: 10,
+                              completed: false,
+                            },
+                          ],
+                        },
+                      ]);
+                      setShowAddPicker(false);
+                      setPickerSearch('');
+                      setPickerMuscle('All');
+                    }}
+                    className="flex-1 text-left min-w-0"
+                  >
+                    <div className="text-sm font-medium text-white truncate">{ex.name}</div>
+                    <div className="text-xs text-zinc-400">
+                      {ex.muscleGroup} · {ex.equipment} · {ex.difficulty}
+                    </div>
+                  </button>
+                  <div className="flex items-center gap-3 shrink-0">
+                    {!ex.isCustom && (
+                      <a
+                        href={ex.muscleWikiUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-[11px] font-medium text-zinc-400 hover:text-[#00FF88]"
+                        title={`View ${ex.name} on MuscleWiki`}
+                      >
+                        MuscleWiki
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEntries((prev) => [
+                          ...prev,
+                          {
+                            exerciseId: ex.id,
+                            name: ex.name,
+                            targetMuscle: ex.muscleGroup,
+                            sets: [
+                              {
+                                setNumber: 1,
+                                weight: ex.equipment === 'Bodyweight' ? 0 : 40,
+                                reps: 10,
+                                completed: false,
+                              },
+                              {
+                                setNumber: 2,
+                                weight: ex.equipment === 'Bodyweight' ? 0 : 40,
+                                reps: 10,
+                                completed: false,
+                              },
+                              {
+                                setNumber: 3,
+                                weight: ex.equipment === 'Bodyweight' ? 0 : 40,
+                                reps: 10,
+                                completed: false,
+                              },
+                            ],
+                          },
+                        ]);
+                        setShowAddPicker(false);
+                        setPickerSearch('');
+                        setPickerMuscle('All');
+                      }}
+                      aria-label={`Add ${ex.name} to session`}
+                      className="p-1.5 rounded-lg bg-[#00FF88]/10 text-[#00FF88] hover:bg-[#00FF88]/20"
+                    >
+                      <Plus className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
               ))}
             </div>
           </div>

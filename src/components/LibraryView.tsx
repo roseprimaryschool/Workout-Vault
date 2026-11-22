@@ -21,6 +21,7 @@ import {
 } from '../types/workout';
 import { saveLocalMediaBlob } from '../utils/mediaStorage';
 import { computePersonalRecords } from '../utils/workoutMath';
+import { mwMuscleUrl } from '../data/exercises';
 import { ExerciseDemoPlayer } from './ExerciseDemoPlayer';
 import { MuscleAnatomyDiagram } from './MuscleAnatomyDiagram';
 
@@ -80,6 +81,7 @@ export const LibraryView: React.FC = () => {
   const [selectedExercise, setSelectedExercise] = useState<Exercise | null>(null);
   const [assignDay, setAssignDay] = useState<Weekday>('monday');
   const [assignedFeedback, setAssignedFeedback] = useState<string | null>(null);
+  const [visibleCount, setVisibleCount] = useState(48);
 
   // Custom Exercise Creator state
   const [showCreator, setShowCreator] = useState(false);
@@ -98,6 +100,14 @@ export const LibraryView: React.FC = () => {
 
   const records = useMemo(() => computePersonalRecords(logs), [logs]);
 
+  const muscleCounts = useMemo(() => {
+    const counts: Record<string, number> = { All: allExercises.length };
+    for (const ex of allExercises) {
+      counts[ex.muscleGroup] = (counts[ex.muscleGroup] || 0) + 1;
+    }
+    return counts;
+  }, [allExercises]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return allExercises.filter((ex) => {
@@ -109,7 +119,8 @@ export const LibraryView: React.FC = () => {
         q &&
         !ex.name.toLowerCase().includes(q) &&
         !ex.muscleGroup.toLowerCase().includes(q) &&
-        !ex.equipment.toLowerCase().includes(q)
+        !ex.equipment.toLowerCase().includes(q) &&
+        !ex.secondaryMuscles.some((m) => m.toLowerCase().includes(q))
       ) {
         return false;
       }
@@ -295,22 +306,38 @@ export const LibraryView: React.FC = () => {
             <button
               key={m}
               type="button"
-              onClick={() => setMuscleFilter(m)}
+              onClick={() => {
+                setMuscleFilter(m);
+                setVisibleCount(48);
+              }}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
                 muscleFilter === m
                   ? 'bg-[#00FF88] text-zinc-950 font-semibold'
                   : 'bg-zinc-950/70 text-zinc-400 hover:text-white border border-white/5'
               }`}
             >
-              {m}
+              {m} ({muscleCounts[m] || 0})
             </button>
           ))}
         </div>
       </div>
 
-      {/* Results Count */}
-      <div className="text-xs text-zinc-400 font-mono">
-        Showing {filtered.length} of {allExercises.length} exercises
+      {/* Results Count + MuscleWiki Directory Link */}
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+        <span className="text-zinc-400 font-mono">
+          Showing {filtered.length} of {allExercises.length} exercises
+        </span>
+        <a
+          href={muscleFilter === 'All' ? 'https://musclewiki.com/exercises' : mwMuscleUrl(muscleFilter)}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1.5 font-medium text-[#00FF88] hover:underline"
+        >
+          {muscleFilter === 'All'
+            ? 'Browse full MuscleWiki exercise directory'
+            : `Browse ${muscleFilter} exercises on MuscleWiki`}
+          <ExternalLink className="w-3.5 h-3.5" />
+        </a>
       </div>
 
       {/* Exercise Cards Grid */}
@@ -332,8 +359,9 @@ export const LibraryView: React.FC = () => {
           </button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {filtered.map((ex) => {
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {filtered.slice(0, visibleCount).map((ex) => {
             const pr = records[ex.id];
             return (
               <article
@@ -405,8 +433,28 @@ export const LibraryView: React.FC = () => {
                 </div>
               </article>
             );
-          })}
-        </div>
+            })}
+          </div>
+
+          {filtered.length > visibleCount && (
+            <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setVisibleCount((prev) => prev + 48)}
+                className="px-5 py-2.5 rounded-xl bg-zinc-900 border border-white/15 text-xs font-semibold text-white hover:border-[#00FF88] hover:text-[#00FF88] transition-colors"
+              >
+                Show More ({Math.min(48, filtered.length - visibleCount)} more of {filtered.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setVisibleCount(filtered.length)}
+                className="px-4 py-2.5 rounded-xl bg-zinc-950 border border-white/10 text-xs font-medium text-zinc-400 hover:text-white transition-colors"
+              >
+                Show All {filtered.length}
+              </button>
+            </div>
+          )}
+        </>
       )}
 
       {/* Exercise Detail & MuscleWiki Demonstration Modal */}
