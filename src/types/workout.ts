@@ -124,6 +124,18 @@ export interface LoggedExercise {
   dumbbellCount?: 1 | 2;
 }
 
+export interface ActiveTrackerSession {
+  selectedDay: Weekday;
+  entries: LoggedExercise[];
+  sessionActive: boolean;
+  isDirty: boolean;
+  startedAtMs: number | null;
+  pausedElapsedSeconds: number;
+  restEndsAtMs: number | null;
+  chimeEnabled: boolean;
+  planSignature: string;
+}
+
 export interface WorkoutLog {
   id: string;
   date: string; // YYYY-MM-DD

@@ -8,12 +8,16 @@ import {
   computeMuscleRecovery,
   computePersonalRecords,
   computeProgressiveOverload,
+  computeRestRemainingSeconds,
+  computeSessionElapsedSeconds,
   computeTrainingSymmetry,
   computeWeeklyVolumeLandmarks,
+  createTrackerEntriesFromPlan,
   detectNewPRs,
   getDefaultDumbbellCount,
   getEffectiveEntryWeight,
   getLocalDateISO,
+  getPlanExercisesSignature,
   getTodaysWorkoutLog,
   hasLoggedWorkoutOnDate,
   isDumbbellExercise,
@@ -445,4 +449,28 @@ test('dumbbell exercises support 1 Dumbbell vs 2 Dumbbells (same weight) default
   assert.equal(prs.length, 1);
   assert.match(prs[0], /25kg×2 = 50kg/);
 });
+
+test('wall-clock tracker timers and plan signature helpers preserve progress accurately across navigation', () => {
+  const t0 = 1_700_000_000_000;
+  // Running session advances cleanly across tab switches/unmounts
+  assert.equal(computeSessionElapsedSeconds(true, t0, 0, t0 + 47_500), 47);
+  // Paused session freezes elapsed time
+  assert.equal(computeSessionElapsedSeconds(false, null, 125, t0 + 99_000), 125);
+  // Rest countdown counts down accurately and floors at 0
+  assert.equal(computeRestRemainingSeconds(t0 + 90_000, t0 + 35_200), 55);
+  assert.equal(computeRestRemainingSeconds(t0 + 90_000, t0 + 95_000), 0);
+
+  const ppl = generateWeeklySplit('Push Pull Legs');
+  const monday = ppl.monday;
+  const entries = createTrackerEntriesFromPlan(monday, EXERCISE_LIBRARY);
+  assert.equal(entries.length, monday.exercises.length);
+  const sigA = getPlanExercisesSignature(monday);
+  const modifiedMonday = {
+    ...monday,
+    exercises: monday.exercises.map((ex, i) => (i === 0 ? { ...ex, sets: ex.sets + 1 } : ex)),
+  };
+  const sigB = getPlanExercisesSignature(modifiedMonday);
+  assert.notEqual(sigA, sigB);
+});
+
 

@@ -93,6 +93,62 @@ export function getEffectiveEntryWeight(weightPerUnit: number, dumbbellCount?: 1
   return Math.round(weightPerUnit * mult * 10) / 10;
 }
 
+export function createTrackerEntriesFromPlan(
+  plan: DayPlan,
+  allExercises: Exercise[] = EXERCISE_LIBRARY
+): LoggedExercise[] {
+  return plan.exercises.map((ex) => {
+    const libEx = allExercises.find((e) => e.id === ex.exerciseId);
+    const isDb = isDumbbellExercise(ex.name, libEx?.equipment);
+    return {
+      exerciseId: ex.exerciseId,
+      name: ex.name,
+      targetMuscle: ex.targetMuscle,
+      ...(isDb ? { dumbbellCount: getDefaultDumbbellCount(ex.exerciseId, ex.name) } : {}),
+      sets: Array.from({ length: ex.sets }, (_, i) => ({
+        setNumber: i + 1,
+        weight: ex.weight,
+        reps: ex.reps,
+        completed: false,
+      })),
+    };
+  });
+}
+
+export function getPlanExercisesSignature(plan: DayPlan): string {
+  return JSON.stringify(
+    plan.exercises.map((ex) => ({
+      exerciseId: ex.exerciseId,
+      sets: ex.sets,
+      reps: ex.reps,
+      weight: ex.weight,
+      restSeconds: ex.restSeconds,
+      tempo: ex.tempo,
+      notes: ex.notes,
+    }))
+  );
+}
+
+export function computeSessionElapsedSeconds(
+  sessionActive: boolean,
+  startedAtMs: number | null,
+  pausedElapsedSeconds: number,
+  nowMs: number = Date.now()
+): number {
+  if (!sessionActive || startedAtMs === null) {
+    return Math.max(0, Math.floor(pausedElapsedSeconds));
+  }
+  return Math.max(0, Math.floor((nowMs - startedAtMs) / 1000));
+}
+
+export function computeRestRemainingSeconds(
+  restEndsAtMs: number | null,
+  nowMs: number = Date.now()
+): number {
+  if (restEndsAtMs === null) return 0;
+  return Math.max(0, Math.ceil((restEndsAtMs - nowMs) / 1000));
+}
+
 export function calculateSessionVolumeKg(entries: LoggedExercise[]): number {
   let total = 0;
   for (const entry of entries) {

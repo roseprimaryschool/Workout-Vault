@@ -11,7 +11,9 @@ import {
   ExternalLink,
   History,
   Lock,
+  Pause,
   Play,
+  RefreshCw,
   RotateCcw,
   SkipForward,
   Timer,
@@ -24,6 +26,7 @@ import {
 } from 'lucide-react';
 import { useVault } from '../context/VaultContext';
 import {
+  ActiveTrackerSession,
   LoggedExercise,
   MuscleGroup,
   Weekday,
@@ -36,10 +39,14 @@ import {
   computeMuscleRecovery,
   computePersonalRecords,
   computeProgressiveOverload,
+  computeRestRemainingSeconds,
+  computeSessionElapsedSeconds,
+  createTrackerEntriesFromPlan,
   detectNewPRs,
   getDefaultDumbbellCount,
   getEffectiveEntryWeight,
   getLocalDateISO,
+  getPlanExercisesSignature,
   getTodaysWorkoutLog,
   isDumbbellExercise,
 } from '../utils/workoutMath';
@@ -90,6 +97,8 @@ export const TrackerView: React.FC<TrackerViewProps> = ({ onOpenPlanner }) => {
     profile,
     activeTrackerDay,
     setActiveTrackerDay,
+    activeTrackerSession,
+    setActiveTrackerSession,
     saveWorkoutLog,
     resetTodaysWorkout,
   } = useVault();
@@ -112,12 +121,7 @@ export const TrackerView: React.FC<TrackerViewProps> = ({ onOpenPlanner }) => {
 
   const personalRecords = useMemo(() => computePersonalRecords(logs), [logs]);
 
-  const [selectedDay, setSelectedDay] = useState<Weekday>(activeTrackerDay || todayWeekday);
-  const [entries, setEntries] = useState<LoggedExercise[]>([]);
-  const [sessionActive, setSessionActive] = useState(false);
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const [restRemaining, setRestRemaining] = useState(0);
-  const [chimeEnabled, setChimeEnabled] = useState(true);
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [completedSummary, setCompletedSummary] = useState<WorkoutLog | null>(null);
   const [copiedRecap, setCopiedRecap] = useState(false);
   const [confirmResetSession, setConfirmResetSession] = useState(false);
@@ -133,62 +137,119 @@ export const TrackerView: React.FC<TrackerViewProps> = ({ onOpenPlanner }) => {
 
   const prevRestRef = useRef(0);
 
-  const buildEntriesFromPlan = (day: Weekday): LoggedExercise[] => {
-    const plan = plans[day];
-    return plan.exercises.map((ex) => {
-      const libEx = allExercises.find((e) => e.id === ex.exerciseId);
-      const isDb = isDumbbellExercise(ex.name, libEx?.equipment);
-      return {
-        exerciseId: ex.exerciseId,
-        name: ex.name,
-        targetMuscle: ex.targetMuscle,
-        ...(isDb ? { dumbbellCount: getDefaultDumbbellCount(ex.exerciseId, ex.name) } : {}),
-        sets: Array.from({ length: ex.sets }, (_, i) => ({
-          setNumber: i + 1,
-          weight: ex.weight,
-          reps: ex.reps,
-          completed: false,
-        })),
-      };
-    });
+  const selectedDay: Weekday =
+    activeTrackerSession?.selectedDay ?? activeTrackerDay ?? todayWeekday;
+  const sessionActive = activeTrackerSession?.sessionActive ?? false;
+  const isDirty = activeTrackerSession?.isDirty ?? false;
+  const chimeEnabled = activeTrackerSession?.chimeEnabled ?? true;
+
+  const currentPlanSig = useMemo(
+    () => getPlanExercisesSignature(plans[selectedDay]),
+    [plans, selectedDay]
+  );
+
+  const entries = useMemo<LoggedExercise[]>(() => {
+    if (activeTrackerSession) {
+      return activeTrackerSession.entries;
+    }
+    return createTrackerEntriesFromPlan(plans[selectedDay], allExercises);
+  }, [activeTrackerSession, plans, selectedDay, allExercises]);
+
+  const elapsedSeconds = computeSessionElapsedSeconds(
+    sessionActive,
+    activeTrackerSession?.startedAtMs ?? null,
+    activeTrackerSession?.pausedElapsedSeconds ?? 0,
+    nowMs
+  );
+  const restRemaining = computeRestRemainingSeconds(
+    activeTrackerSession?.restEndsAtMs ?? null,
+    nowMs
+  );
+
+  const planUpdatedWhileSessionActive = Boolean(
+    activeTrackerSession &&
+      (activeTrackerSession.sessionActive || activeTrackerSession.isDirty) &&
+      activeTrackerSession.planSignature !== currentPlanSig
+  );
+
+  const buildFreshSession = (
+    day: Weekday,
+    autoStart: boolean,
+    keepChime: boolean = chimeEnabled
+  ): ActiveTrackerSession => {
+    const now = Date.now();
+    return {
+      selectedDay: day,
+      entries: createTrackerEntriesFromPlan(plans[day], allExercises),
+      sessionActive: autoStart,
+      isDirty: autoStart,
+      startedAtMs: autoStart ? now : null,
+      pausedElapsedSeconds: 0,
+      restEndsAtMs: null,
+      chimeEnabled: keepChime,
+      planSignature: getPlanExercisesSignature(plans[day]),
+    };
   };
 
-  // Sync if launched from Planner "Start" button
-  useEffect(() => {
-    if (activeTrackerDay) {
-      setSelectedDay(activeTrackerDay);
-      loadDayIntoTracker(activeTrackerDay, true);
-      setActiveTrackerDay(null);
-    }
-  }, [activeTrackerDay]);
-
   const loadDayIntoTracker = (day: Weekday, autoStart: boolean = true) => {
-    setEntries(buildEntriesFromPlan(day));
-    setElapsedSeconds(0);
-    setRestRemaining(0);
-    setSessionActive(autoStart);
+    setNowMs(Date.now());
+    setActiveTrackerSession(buildFreshSession(day, autoStart));
     setCompletedSummary(null);
     setCopiedRecap(false);
     setConfirmResetSession(false);
     setSaveError(null);
   };
 
-  // Keep Tracker synchronized with Planner whenever no active session is running
+  // Sync if launched from Planner "Start" button (without wiping an already ongoing session on the same day)
   useEffect(() => {
-    if (!sessionActive && !completedSummary) {
-      setEntries(buildEntriesFromPlan(selectedDay));
+    if (activeTrackerDay) {
+      const sameOngoingDay =
+        activeTrackerSession &&
+        activeTrackerSession.selectedDay === activeTrackerDay &&
+        (activeTrackerSession.sessionActive || activeTrackerSession.isDirty);
+      if (!sameOngoingDay) {
+        loadDayIntoTracker(activeTrackerDay, true);
+      }
+      setActiveTrackerDay(null);
     }
-  }, [selectedDay, plans, allExercises, sessionActive, completedSummary]);
+  }, [activeTrackerDay]);
 
-  // Session stopwatch & rest countdown
+  // Keep idle Tracker synchronized with Planner edits
   useEffect(() => {
-    if (!sessionActive) return;
+    if (activeTrackerDay || !activeTrackerSession || completedSummary) return;
+    if (!activeTrackerSession.sessionActive && !activeTrackerSession.isDirty) {
+      if (activeTrackerSession.planSignature !== currentPlanSig) {
+        setActiveTrackerSession({
+          ...activeTrackerSession,
+          entries: createTrackerEntriesFromPlan(plans[selectedDay], allExercises),
+          planSignature: currentPlanSig,
+        });
+      }
+    }
+  }, [
+    selectedDay,
+    plans,
+    allExercises,
+    currentPlanSig,
+    activeTrackerDay,
+    activeTrackerSession,
+    completedSummary,
+  ]);
+
+  // Wall-clock 1-second UI tick while timer or rest countdown is running
+  useEffect(() => {
+    const hasActiveRest =
+      activeTrackerSession?.restEndsAtMs !== null &&
+      activeTrackerSession?.restEndsAtMs !== undefined &&
+      activeTrackerSession.restEndsAtMs > Date.now();
+
+    if (!sessionActive && !hasActiveRest) return;
+    setNowMs(Date.now());
     const timer = window.setInterval(() => {
-      setElapsedSeconds((s) => s + 1);
-      setRestRemaining((r) => (r > 0 ? r - 1 : 0));
+      setNowMs(Date.now());
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [sessionActive]);
+  }, [sessionActive, activeTrackerSession?.restEndsAtMs]);
 
   // Trigger audio chime when rest hits 0 naturally
   useEffect(() => {
@@ -198,26 +259,88 @@ export const TrackerView: React.FC<TrackerViewProps> = ({ onOpenPlanner }) => {
     prevRestRef.current = restRemaining;
   }, [restRemaining, chimeEnabled, sessionActive]);
 
-  const toggleSetCompleted = (exIdx: number, setIdx: number) => {
-    if (!sessionActive) setSessionActive(true);
-    setEntries((prev) =>
-      prev.map((ex, i) => {
-        if (i !== exIdx) return ex;
+  const mutateSessionEntries = (
+    updater: (prevEntries: LoggedExercise[]) => LoggedExercise[],
+    options?: { startIfIdle?: boolean; newRestEndsAtMs?: number | null }
+  ) => {
+    const now = Date.now();
+    setNowMs(now);
+    setActiveTrackerSession((prev) => {
+      const base = prev || buildFreshSession(selectedDay, false);
+      const nextEntries = updater(base.entries);
+      const shouldStart = options?.startIfIdle && !base.sessionActive;
+      return {
+        ...base,
+        entries: nextEntries,
+        isDirty: true,
+        sessionActive: shouldStart ? true : base.sessionActive,
+        startedAtMs: shouldStart
+          ? now - base.pausedElapsedSeconds * 1000
+          : base.startedAtMs,
+        restEndsAtMs:
+          options?.newRestEndsAtMs !== undefined
+            ? options.newRestEndsAtMs
+            : base.restEndsAtMs,
+      };
+    });
+  };
+
+  const handleToggleSessionTimer = () => {
+    const now = Date.now();
+    setNowMs(now);
+    setActiveTrackerSession((prev) => {
+      const base = prev || buildFreshSession(selectedDay, false);
+      if (base.sessionActive) {
+        const currentElapsed = computeSessionElapsedSeconds(
+          true,
+          base.startedAtMs,
+          base.pausedElapsedSeconds,
+          now
+        );
         return {
-          ...ex,
-          sets: ex.sets.map((s, j) => {
-            if (j !== setIdx) return s;
-            const nextDone = !s.completed;
-            if (nextDone) {
-              const plannedRest =
-                plans[selectedDay].exercises.find((p) => p.exerciseId === ex.exerciseId)
-                  ?.restSeconds || 90;
-              setRestRemaining(plannedRest);
-            }
-            return { ...s, completed: nextDone };
-          }),
+          ...base,
+          sessionActive: false,
+          isDirty: true,
+          startedAtMs: null,
+          pausedElapsedSeconds: currentElapsed,
         };
-      })
+      }
+      return {
+        ...base,
+        sessionActive: true,
+        isDirty: true,
+        startedAtMs: now - base.pausedElapsedSeconds * 1000,
+      };
+    });
+    setCompletedSummary(null);
+  };
+
+  const toggleSetCompleted = (exIdx: number, setIdx: number) => {
+    let plannedRestMs: number | undefined;
+    const targetEx = entries[exIdx];
+    const targetSet = targetEx?.sets[setIdx];
+    if (targetEx && targetSet && !targetSet.completed) {
+      const plannedRest =
+        plans[selectedDay].exercises.find((p) => p.exerciseId === targetEx.exerciseId)
+          ?.restSeconds || 90;
+      plannedRestMs = Date.now() + plannedRest * 1000;
+    }
+
+    mutateSessionEntries(
+      (prev) =>
+        prev.map((ex, i) => {
+          if (i !== exIdx) return ex;
+          return {
+            ...ex,
+            sets: ex.sets.map((s, j) =>
+              j !== setIdx ? s : { ...s, completed: !s.completed }
+            ),
+          };
+        }),
+      {
+        startIfIdle: true,
+        newRestEndsAtMs: plannedRestMs,
+      }
     );
   };
 
@@ -227,7 +350,7 @@ export const TrackerView: React.FC<TrackerViewProps> = ({ onOpenPlanner }) => {
     field: 'weight' | 'reps',
     value: number
   ) => {
-    setEntries((prev) =>
+    mutateSessionEntries((prev) =>
       prev.map((ex, i) =>
         i !== exIdx
           ? ex
@@ -243,7 +366,7 @@ export const TrackerView: React.FC<TrackerViewProps> = ({ onOpenPlanner }) => {
 
   const updateSetRpe = (exIdx: number, setIdx: number, rpeVal: string) => {
     const parsed = rpeVal ? Number(rpeVal) : undefined;
-    setEntries((prev) =>
+    mutateSessionEntries((prev) =>
       prev.map((ex, i) =>
         i !== exIdx
           ? ex
@@ -263,7 +386,7 @@ export const TrackerView: React.FC<TrackerViewProps> = ({ onOpenPlanner }) => {
   };
 
   const applySuggestedWeight = (exIdx: number, newWeight: number) => {
-    setEntries((prev) =>
+    mutateSessionEntries((prev) =>
       prev.map((ex, i) =>
         i !== exIdx
           ? ex
@@ -276,7 +399,7 @@ export const TrackerView: React.FC<TrackerViewProps> = ({ onOpenPlanner }) => {
   };
 
   const setExerciseDumbbellCount = (exIdx: number, count: 1 | 2) => {
-    setEntries((prev) =>
+    mutateSessionEntries((prev) =>
       prev.map((ex, i) => (i !== exIdx ? ex : { ...ex, dumbbellCount: count }))
     );
   };
@@ -297,7 +420,7 @@ export const TrackerView: React.FC<TrackerViewProps> = ({ onOpenPlanner }) => {
     const doneSets = lastEntry.sets.filter((s) => s.completed);
     if (doneSets.length === 0) return;
 
-    setEntries((prev) =>
+    mutateSessionEntries((prev) =>
       prev.map((ex, i) => {
         if (i !== exIdx) return ex;
         return {
@@ -355,8 +478,7 @@ export const TrackerView: React.FC<TrackerViewProps> = ({ onOpenPlanner }) => {
 
     try {
       await saveWorkoutLog(log);
-      setSessionActive(false);
-      setRestRemaining(0);
+      setActiveTrackerSession(null);
       setCompletedSummary(log);
     } catch (err) {
       setSaveError(
@@ -430,7 +552,6 @@ export const TrackerView: React.FC<TrackerViewProps> = ({ onOpenPlanner }) => {
             value={selectedDay}
             onChange={(e) => {
               const d = e.target.value as Weekday;
-              setSelectedDay(d);
               loadDayIntoTracker(d, false);
             }}
             className="rounded-xl bg-zinc-900 border border-white/10 px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-[#00FF88]"
@@ -444,18 +565,31 @@ export const TrackerView: React.FC<TrackerViewProps> = ({ onOpenPlanner }) => {
 
           <button
             type="button"
-            onClick={() => loadDayIntoTracker(selectedDay, true)}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-zinc-900 border border-white/10 text-sm font-medium text-white hover:border-[#00FF88]/50"
+            onClick={handleToggleSessionTimer}
+            className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border text-sm font-medium transition-colors ${
+              sessionActive
+                ? 'bg-[#00FF88]/10 border-[#00FF88]/40 text-[#00FF88]'
+                : 'bg-zinc-900 border-white/10 text-white hover:border-[#00FF88]/50'
+            }`}
           >
-            <Play className="w-4 h-4 text-[#00FF88]" />
-            Start Timer
+            {sessionActive ? (
+              <>
+                <Pause className="w-4 h-4 text-[#00FF88]" />
+                Pause Timer
+              </>
+            ) : (
+              <>
+                <Play className="w-4 h-4 text-[#00FF88]" />
+                {elapsedSeconds > 0 ? 'Resume Timer' : 'Start Timer'}
+              </>
+            )}
           </button>
 
           {!confirmResetSession ? (
             <button
               type="button"
               onClick={() => {
-                if (completedSetCount > 0 || elapsedSeconds > 10) {
+                if (completedSetCount > 0 || elapsedSeconds > 10 || isDirty) {
                   setConfirmResetSession(true);
                 } else {
                   loadDayIntoTracker(selectedDay, false);
@@ -508,7 +642,12 @@ export const TrackerView: React.FC<TrackerViewProps> = ({ onOpenPlanner }) => {
             </span>
             <button
               type="button"
-              onClick={() => setChimeEnabled((v) => !v)}
+              onClick={() =>
+                setActiveTrackerSession((prev) => {
+                  const base = prev || buildFreshSession(selectedDay, false);
+                  return { ...base, chimeEnabled: !base.chimeEnabled };
+                })
+              }
               aria-label={chimeEnabled ? 'Mute rest chime' : 'Enable rest chime'}
               title={chimeEnabled ? 'Rest chime on' : 'Rest chime muted'}
               className="text-zinc-400 hover:text-white"
@@ -527,7 +666,11 @@ export const TrackerView: React.FC<TrackerViewProps> = ({ onOpenPlanner }) => {
             {restRemaining > 0 && (
               <button
                 type="button"
-                onClick={() => setRestRemaining(0)}
+                onClick={() =>
+                  setActiveTrackerSession((prev) =>
+                    prev ? { ...prev, restEndsAtMs: null } : prev
+                  )
+                }
                 className="inline-flex items-center gap-1 text-xs text-zinc-400 hover:text-white"
               >
                 <SkipForward className="w-3.5 h-3.5" /> Skip
@@ -550,6 +693,23 @@ export const TrackerView: React.FC<TrackerViewProps> = ({ onOpenPlanner }) => {
           </div>
         </div>
       </div>
+
+      {/* Optional Planner Sync Prompt if Planner changed while session is in progress */}
+      {planUpdatedWhileSessionActive && (
+        <div className="rounded-2xl bg-amber-500/10 border border-amber-500/35 px-4 py-3 text-xs text-amber-200 flex flex-wrap items-center justify-between gap-3">
+          <span>
+            Your Weekly Planner for {WEEKDAY_LABELS[selectedDay]} was updated while this session is in progress.
+          </span>
+          <button
+            type="button"
+            onClick={() => loadDayIntoTracker(selectedDay, sessionActive)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-400 text-zinc-950 font-semibold hover:bg-amber-300"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            Sync Updated Plan
+          </button>
+        </div>
+      )}
 
       {/* Inline Save / Validation Error */}
       {saveError && (

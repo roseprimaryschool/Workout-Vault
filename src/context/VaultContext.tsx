@@ -31,6 +31,7 @@ import {
   handleFirestoreError,
 } from '../firebase';
 import {
+  ActiveTrackerSession,
   DayPlan,
   Exercise,
   GeneratorStyle,
@@ -134,6 +135,8 @@ interface VaultContextValue {
   resetTodaysWorkout: (dateISO?: string) => Promise<void>;
   activeTrackerDay: Weekday | null;
   setActiveTrackerDay: (day: Weekday | null) => void;
+  activeTrackerSession: ActiveTrackerSession | null;
+  setActiveTrackerSession: React.Dispatch<React.SetStateAction<ActiveTrackerSession | null>>;
   resetDemoData: () => Promise<void>;
 }
 
@@ -162,6 +165,8 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({
   const [customExercises, setCustomExercises] = useState<Exercise[]>([]);
   const [profile, setProfile] = useState<UserProfile>(() => createEmptyProfile(null));
   const [activeTrackerDay, setActiveTrackerDay] = useState<Weekday | null>(null);
+  const [activeTrackerSession, setActiveTrackerSession] =
+    useState<ActiveTrackerSession | null>(null);
 
   // Clear legacy seeded localStorage keys once so old fake data never lingers
   useEffect(() => {
@@ -218,6 +223,20 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   }, [profile, user]);
 
+  useEffect(() => {
+    if (!user) return;
+    try {
+      const key = userStorageKey(user.uid, 'active_session');
+      if (activeTrackerSession) {
+        localStorage.setItem(key, JSON.stringify(activeTrackerSession));
+      } else {
+        localStorage.removeItem(key);
+      }
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [activeTrackerSession, user]);
+
   // Listen to Firebase Auth state
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (firebaseUser) => {
@@ -230,12 +249,16 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({
         setLogs([]);
         setCustomExercises([]);
         setProfile(createEmptyProfile(null));
+        setActiveTrackerSession(null);
       } else {
         setAuthError(null);
         setPlans(loadUserJson(firebaseUser.uid, 'plans', DEFAULT_WEEKLY_PLANS));
         setLogs(loadUserJson(firebaseUser.uid, 'logs', []));
         setCustomExercises(loadUserJson(firebaseUser.uid, 'custom', []));
         setProfile(loadUserJson(firebaseUser.uid, 'profile', createEmptyProfile(firebaseUser)));
+        setActiveTrackerSession(
+          loadUserJson<ActiveTrackerSession | null>(firebaseUser.uid, 'active_session', null)
+        );
       }
     });
     return () => unsub();
@@ -769,6 +792,8 @@ export const VaultProvider: React.FC<{ children: React.ReactNode }> = ({
         resetTodaysWorkout,
         activeTrackerDay,
         setActiveTrackerDay,
+        activeTrackerSession,
+        setActiveTrackerSession,
         resetDemoData,
       }}
     >
